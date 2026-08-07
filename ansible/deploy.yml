@@ -34,6 +34,7 @@
     - name: Wait for MySQL pod to be ready
       kubernetes.core.k8s_info:
         kind: Pod
+        namespace: default
         label_selectors: ["app=mysql"]
         wait: true
         wait_condition:
