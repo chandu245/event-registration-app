@@ -1,0 +1,52 @@
+- hosts: local
+  gather_facts: false
+  vars:
+    ecr_repo: "{{ ecr_repo_url }}"
+    image_tag: "{{ build_number }}"
+    aws_region: "ap-southeast-1"
+  tasks:
+    - name: Log in to ECR
+      shell: >
+        aws ecr get-login-password --region {{ aws_region }} |
+        docker login --username AWS --password-stdin {{ ecr_repo }}
+
+    - name: Build Docker image
+      command: docker build -t {{ ecr_repo }}:{{ image_tag }} ../app
+
+    - name: Push image to ECR
+      command: docker push {{ ecr_repo }}:{{ image_tag }}
+
+    - name: Apply DB Secret
+      kubernetes.core.k8s:
+        state: present
+        template: templates/secret.yml.j2
+
+    - name: Apply MySQL headless service
+      kubernetes.core.k8s:
+        state: present
+        template: templates/mysql-service.yml.j2
+
+    - name: Apply MySQL StatefulSet
+      kubernetes.core.k8s:
+        state: present
+        template: templates/mysql-statefulset.yml.j2
+
+    - name: Wait for MySQL pod to be ready
+      kubernetes.core.k8s_info:
+        kind: Pod
+        label_selectors: ["app=mysql"]
+        wait: true
+        wait_condition:
+          type: Ready
+          status: "True"
+        wait_timeout: 180
+
+    - name: Apply Tomcat Deployment
+      kubernetes.core.k8s:
+        state: present
+        template: templates/deployment.yml.j2
+
+    - name: Apply LoadBalancer Service
+      kubernetes.core.k8s:
+        state: present
+        template: templates/service.yml.j2

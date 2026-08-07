@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tomcat-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: tomcat-app }
+  template:
+    metadata:
+      labels: { app: tomcat-app }
+    spec:
+      containers:
+        - name: tomcat
+          image: "{{ ecr_repo }}:{{ image_tag }}"
+          ports: [{ containerPort: 8080 }]
+          envFrom:
+            - secretRef: { name: db-secret }
+          resources:
+            requests: { cpu: "250m", memory: "256Mi" }
+            limits: { cpu: "500m", memory: "512Mi" }
+          readinessProbe:
+            httpGet: { path: /, port: 8080 }
+            initialDelaySeconds: 20
+            periodSeconds: 10
