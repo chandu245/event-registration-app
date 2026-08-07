@@ -20,7 +20,7 @@ pipeline {
 
     stage('Checkout') {
       steps {
-        git url: 'https://github.com/chandu245/event-registration-app.git', branch: 'main'
+        git url: 'https://github.com/yourname/event-registration-app.git', branch: 'main'
       }
     }
 
@@ -57,7 +57,7 @@ pipeline {
       steps {
         sh '''
           cd ansible
-          ansible-playbook deploy.yml \
+          ansible-playbook -i inventory.ini deploy.yml \
             -e ecr_repo_url=$ECR_REPO \
             -e build_number=$BUILD_NUMBER \
             -e mysql_password=$MYSQL_PWD \
