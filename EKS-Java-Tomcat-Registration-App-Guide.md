@@ -431,6 +431,21 @@ import java.sql.DriverManager;
 import java.sql.SQLException;
 
 public class DBUtil {
+
+    static {
+        // Explicit driver registration. JDBC 4.0+ normally auto-registers drivers via
+        // META-INF/services/java.sql.Driver, but forcing it here guards against classloader
+        // edge cases (e.g. filters/threads that don't delegate to the webapp classloader)
+        // and gives a clear, early error if the driver jar simply isn't on the classpath.
+        try {
+            Class.forName("com.mysql.cj.jdbc.Driver");
+        } catch (ClassNotFoundException e) {
+            throw new ExceptionInInitializerError(
+                "MySQL JDBC driver not found on classpath. Check that mysql-connector-j " +
+                "is in WEB-INF/lib inside the deployed WAR: " + e.getMessage());
+        }
+    }
+
     public static Connection getConnection() throws SQLException {
         String url = System.getenv("DB_URL");   // e.g. jdbc:mysql://mysql-service:3306/eventdb
         String user = System.getenv("DB_USER");
@@ -658,6 +673,7 @@ module "eks" {
 
   eks_managed_node_groups = {
     default = {
+      ami_type       = "AL2023_x86_64_STANDARD"  # AL2 (old default) is unsupported on K8s 1.30+
       instance_types = [var.node_instance_type]
       capacity_type  = "SPOT"
       min_size       = 1
@@ -1308,7 +1324,97 @@ Either way, double check in the AWS Console (EC2 → Load Balancers, EKS → Clu
 
 ---
 
-## 11. Optional Extensions (once the base works)
+## 11. Troubleshooting: Common Errors
+
+### `java.sql.SQLException: No suitable driver found for jdbc:mysql://...`
+
+**Meaning:** `DriverManager` has no MySQL driver registered — the JDBC driver jar isn't actually inside the deployed WAR's `WEB-INF/lib`, or a stale image/build is being served.
+
+**Fix:**
+1. Rebuild without cache so you're 100% sure you're testing fresh code:
+   ```bash
+   docker compose build --no-cache tomcat-app
+   docker compose up --force-recreate
+   ```
+2. Confirm the driver jar actually made it into the WAR:
+   ```bash
+   docker compose exec tomcat-app sh -c "ls /usr/local/tomcat/webapps/ROOT.war"
+   docker compose exec tomcat-app sh -c "unzip -p /usr/local/tomcat/webapps/ROOT.war WEB-INF/lib/ | strings | grep mysql-connector"
+   ```
+   (If `ROOT.war` was auto-exploded by Tomcat into a `ROOT/` folder instead, check `WEB-INF/lib/` directly: `docker compose exec tomcat-app ls /usr/local/tomcat/webapps/ROOT/WEB-INF/lib/` — you should see `mysql-connector-j-8.4.0.jar`.)
+3. If it's missing, double-check `pom.xml` has the `mysql-connector-j` dependency with **no** `<scope>` tag (default `compile` scope is what gets bundled into the WAR — `provided` or `test` scope would silently exclude it).
+4. `DBUtil.java` in Section 9.2 now explicitly loads `com.mysql.cj.jdbc.Driver` in a static block on class init — this turns a silent "driver missing" into a clear startup error pointing at the real cause, instead of failing later mid-request.
+
+### `Communications link failure` / `Connection refused` connecting to MySQL
+
+**Meaning:** the app started before MySQL finished initializing (MySQL can take 10-30s on first boot to create the database/user).
+
+**Fix:** `depends_on` in Docker Compose only waits for the container to *start*, not for MySQL to be *ready*. For local testing, just retry the form submit after ~20 seconds. For a more robust fix, add a healthcheck to `docker-compose.yml`:
+```yaml
+mysql:
+  # ...existing config...
+  healthcheck:
+    test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+    interval: 5s
+    timeout: 5s
+    retries: 10
+tomcat-app:
+  depends_on:
+    mysql:
+      condition: service_healthy
+```
+
+### `kubectl get nodes` returns `error: You must be logged in to the server (Unauthorized)`
+
+**Meaning:** your IAM identity isn't mapped to a Kubernetes RBAC role in the cluster — usually because a *different* IAM user/role ran `terraform apply` than the one running `kubectl`.
+
+**Fix:** re-run `aws eks update-kubeconfig` as the same IAM identity that created the cluster, or check `eks.tf`'s `enable_cluster_creator_admin_permissions` setting took effect. `aws sts get-caller-identity` shows which identity `kubectl` is currently using.
+
+### `EXTERNAL-IP` stays `<pending>` on `tomcat-service`
+
+**Meaning:** AWS is still provisioning the ELB (normal, takes 1-3 minutes) — or your node group's subnets aren't tagged for load balancer discovery.
+
+**Fix:** wait a few minutes first (`kubectl get svc tomcat-service -w`). If it's still pending after 5 minutes, confirm the `kubernetes.io/role/elb = 1` tag is present on your public subnets (already set in `vpc.tf`, Section 9.10) — Kubernetes uses that tag to know where it's allowed to place the load balancer.
+
+### `InvalidParameterException: Requested AMI for this version 1.30 is not supported`
+
+**Meaning:** Amazon Linux 2 — the old default node AMI — was deprecated by AWS for Kubernetes 1.30 and later. If a node group doesn't explicitly set `ami_type`, older versions of the `terraform-aws-modules/eks` module can still default to it.
+
+**Fix:** already applied in `terraform/eks.tf` (Section 9.11) — the node group sets `ami_type = "AL2023_x86_64_STANDARD"` explicitly. If you hit this on a cluster you already partially created, run `terraform apply` again after pulling the updated file; Terraform will recreate just the node group with the correct AMI type.
+
+### `git push` rejected: `Invalid username or token. Password authentication is not supported`
+
+**Meaning:** GitHub retired password auth for Git operations — this applies both to your terminal and to Jenkins' Git checkout step.
+
+**Fix:** generate a GitHub **Personal Access Token (classic)** with the `repo` scope (Settings → Developer settings → Personal access tokens), and use it in place of your password — either in a `https://<user>:<token>@github.com/...` clone URL, or as the password field of a "Username with password" credential in Jenkins.
+
+### Jenkins pipeline fails immediately with the credential ID as the only error (e.g. `ERROR: mysql-app-password`)
+
+**Meaning:** that credential ID doesn't exist in Jenkins yet, or exists in the wrong store — credentials added under your **personal user** account aren't visible to pipeline builds, only ones under **System → Global credentials (unrestricted)** are.
+
+**Fix:** Manage Jenkins → Credentials → confirm all three (`ecr-repo-url`, `mysql-app-password`, `mysql-root-password`) exist under the Global store specifically, with IDs typed in exactly (don't leave the ID field blank — it auto-generates a random one Jenkins can't match against `credentials('...')` in the `Jenkinsfile`).
+
+### `No valid credential sources found` / `no EC2 IMDS role found` on `terraform apply`
+
+**Meaning:** Terraform (running on the Jenkins box) has no AWS credentials at all — no IAM instance profile attached, and no access keys configured.
+
+**Fix:** attach an IAM role to the Jenkins EC2 instance (EC2 Console → instance → Actions → Security → Modify IAM role) rather than storing access keys on disk. If Jenkins isn't running on EC2, add `aws-access-key-id` / `aws-secret-access-key` as Jenkins Secret text credentials instead and reference them in the `Jenkinsfile`'s `environment {}` block — Terraform and the AWS CLI both auto-detect those exact env var names.
+
+### `ERROR: Unable to find Jenkinsfile from git ...`
+
+**Meaning:** either the file wasn't pushed, the branch specifier doesn't match your default branch (`*/master` vs `*/main`), or — easy to miss — the repo has an extra nested folder so the real root is one level deeper than GitHub's file browser makes it look.
+
+**Fix:** check the GitHub repo page directly — `Jenkinsfile` should be visible at the top level of the file listing, not inside a subfolder. If it's nested, move everything up one level and re-push; the pipeline's `cd app` / `cd terraform` / `cd ansible` stages assume repo-root as the working directory too, so this fix matters beyond just the initial file lookup.
+
+### Terraform: `Error: state lock` or resources already exist
+
+**Meaning:** a previous `apply`/`destroy` didn't finish cleanly (e.g. Jenkins job was cancelled mid-run).
+
+**Fix:** check nothing else is actually running (`ps aux | grep terraform` on the machine that ran it), then `terraform force-unlock <LOCK_ID>` using the lock ID from the error message. If resources exist in AWS but not in Terraform's state, use `terraform import` rather than manually deleting things from the console.
+
+---
+
+## 12. Optional Extensions (once the base works)
 
 - Swap the in-cluster MySQL for **RDS** (`db.t3.micro`, free-tier eligible) and compare operational differences — good talking point for interviews about managed vs self-hosted DB.
 - Replace the plain LoadBalancer Service with an **AWS Load Balancer Controller + Ingress** (path-based routing, TLS via ACM) — the pattern used in most real production clusters.
