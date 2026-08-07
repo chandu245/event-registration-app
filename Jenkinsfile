@@ -20,7 +20,7 @@ pipeline {
 
     stage('Checkout') {
       steps {
-        git url: 'https://github.com/yourname/event-registration-app.git', branch: 'main'
+        git url: 'https://github.com/chandu245/event-registration-app.git', branch: 'main'
       }
     }
 
