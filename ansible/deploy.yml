@@ -4,6 +4,19 @@
     ecr_repo: "{{ ecr_repo_url }}"
     image_tag: "{{ build_number }}"
     aws_region: "ap-southeast-1"
+  pre_tasks:
+    - name: Ensure DB credentials were actually supplied
+      assert:
+        that:
+          - mysql_password is defined
+          - mysql_password | length > 0
+          - mysql_root_password is defined
+          - mysql_root_password | length > 0
+        fail_msg: >
+          mysql_password and mysql_root_password must be passed via -e
+          (or Jenkins credentials). This repo intentionally has no default
+          fallback password baked into secret.yml.j2 — never commit real
+          credentials, and never rely on a placeholder default either.
   tasks:
     - name: Log in to ECR
       shell: >
