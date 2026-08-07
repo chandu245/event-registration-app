@@ -20,7 +20,7 @@ pipeline {
 
     stage('Checkout') {
       steps {
-        git url: 'https://github.com/chandu245/event-registration-app.git', branch: 'main'
+        git url: 'https://github.com/yourname/event-registration-app.git', branch: 'main'
       }
     }
 
@@ -66,10 +66,51 @@ pipeline {
       }
     }
 
-    stage('Verify Deployment') {
+    stage('Wait for LoadBalancer & Verify') {
       when { expression { params.ACTION == 'Deploy' } }
       steps {
-        sh 'kubectl get svc tomcat-service -o wide'
+        script {
+          // Step 1: wait for AWS to assign the ELB a DNS name (usually 1-3 min).
+          def dns = ''
+          timeout(time: 5, unit: 'MINUTES') {
+            waitUntil {
+              dns = sh(
+                script: "kubectl get svc tomcat-service -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true",
+                returnStdout: true
+              ).trim()
+              if (dns) {
+                return true
+              }
+              echo 'Waiting for ELB DNS to be assigned...'
+              sleep(time: 15, unit: 'SECONDS')
+              return false
+            }
+          }
+          env.APP_URL = "http://${dns}"
+          echo "ELB DNS assigned: ${env.APP_URL}"
+
+          // Step 2: DNS existing doesn't mean the ELB's health check has passed yet
+          // (target registration + health checks can lag another 1-2 min) — so also
+          // wait for an actual HTTP 200 before calling this a success.
+          timeout(time: 3, unit: 'MINUTES') {
+            waitUntil {
+              def code = sh(
+                script: "curl -s -o /dev/null -w '%{http_code}' ${env.APP_URL} || true",
+                returnStdout: true
+              ).trim()
+              if (code == '200') {
+                return true
+              }
+              echo "App not responding yet (HTTP ${code}), retrying..."
+              sleep(time: 15, unit: 'SECONDS')
+              return false
+            }
+          }
+
+          echo "=================================================="
+          echo " App is live at: ${env.APP_URL}"
+          echo "=================================================="
+        }
         sh 'kubectl get pods -o wide'
       }
     }
@@ -99,7 +140,13 @@ pipeline {
 
   post {
     success {
-      echo "${params.ACTION} completed successfully."
+      script {
+        if (params.ACTION == 'Deploy' && env.APP_URL) {
+          echo "Deploy complete — access your app at: ${env.APP_URL}"
+        } else {
+          echo "${params.ACTION} completed successfully."
+        }
+      }
     }
     failure {
       echo "Pipeline failed during ${params.ACTION} — check stage logs above."
