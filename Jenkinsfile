@@ -15,6 +15,10 @@ pipeline {
     // DB passwords are no longer stored in Jenkins.
     // They are seeded into AWS Secrets Manager by Terraform and fetched at
     // deploy time by Ansible — see ansible/deploy.yml for details.
+
+    // Extend PATH so tools installed via pip (--user) or system package managers
+    // are found even in Jenkins' non-login shell environment.
+    PATH = "/usr/local/bin:/usr/bin:/bin:/home/jenkins/.local/bin:${env.PATH}"
   }
 
   stages {
@@ -73,7 +77,12 @@ pipeline {
     stage('Deploy via Ansible') {
       when { expression { params.ACTION == 'Deploy' } }
       steps {
-        sh '''
+        sh '''#!/bin/bash -l
+          # -l (login shell) sources /etc/profile and ~/.bash_profile so that
+          # pip-installed tools like ansible-playbook are on PATH regardless of
+          # where Jenkins installed them.
+          set -e
+          which ansible-playbook   # prints resolved path for debugging
           cd ansible
           ansible-playbook -i inventory.ini deploy.yml \
             -e ecr_repo_url=$ECR_REPO \
