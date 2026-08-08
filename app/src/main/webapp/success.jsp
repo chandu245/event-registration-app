@@ -126,7 +126,7 @@
 
     <a class="btn" href="index.jsp">Register another attendee</a>
 
-    <p class="footer-note">A confirmation has been saved. Please keep this page for your records.</p>
+    <p class="footer-note">Your details have been recorded in our database.</p>
   </div>
 
 </body>

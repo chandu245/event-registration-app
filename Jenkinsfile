@@ -30,12 +30,10 @@ pipeline {
 
     // ------------------- DEPLOY PATH -------------------
 
-    stage('Build WAR') {
-      when { expression { params.ACTION == 'Deploy' } }
-      steps {
-        sh 'cd app && mvn -B clean package'
-      }
-    }
+    // NOTE: No 'Build WAR' stage here. The Dockerfile is a multi-stage build
+    // that runs `mvn clean package` inside a Maven container and copies the WAR
+    // to Tomcat. Building on the Jenkins agent would produce a WAR that Docker
+    // never uses, and would require Maven installed on the agent unnecessarily.
 
     stage('Provision Infra') {
       when { expression { params.ACTION == 'Deploy' } }
@@ -45,6 +43,12 @@ pipeline {
         // (Manage Jenkins → System → Global properties → Environment variables).
         // Terraform uses them to seed the AWS Secrets Manager secret on first apply.
         sh '''
+          set -e
+          # Fail fast with a clear message if the DB password env vars are missing.
+          # Without this, `terraform apply -input=false` exits with a cryptic error.
+          : "${TF_VAR_mysql_password:?TF_VAR_mysql_password must be set in Jenkins Global env vars (Manage Jenkins → System → Global properties)}"
+          : "${TF_VAR_mysql_root_password:?TF_VAR_mysql_root_password must be set in Jenkins Global env vars}"
+
           cd terraform
           terraform init -input=false
           terraform apply -auto-approve -input=false

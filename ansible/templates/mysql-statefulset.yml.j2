@@ -21,6 +21,22 @@ spec:
           resources:
             requests: { cpu: "250m", memory: "256Mi" }
             limits: { cpu: "500m", memory: "512Mi" }
+          # Readiness probe: K8s marks the pod Ready only when MySQL actually
+          # accepts connections — not merely when the process starts.
+          # Without this, Ansible's "wait for MySQL pod to be ready" returns
+          # too early and Tomcat's InitDbServlet hits a connection-refused error.
+          readinessProbe:
+            exec:
+              command: ["mysqladmin", "ping", "-h", "localhost", "--silent"]
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            failureThreshold: 12   # up to 60s after initialDelay
+          livenessProbe:
+            exec:
+              command: ["mysqladmin", "ping", "-h", "localhost", "--silent"]
+            initialDelaySeconds: 40
+            periodSeconds: 10
+            failureThreshold: 6
           volumeMounts:
             - name: mysql-data
               mountPath: /var/lib/mysql
