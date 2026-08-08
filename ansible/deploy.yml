@@ -3,20 +3,35 @@
   vars:
     ecr_repo: "{{ ecr_repo_url }}"
     image_tag: "{{ build_number }}"
-    aws_region: "ap-southeast-1"
+    aws_region: "{{ aws_region | default('ap-southeast-1') }}"
+    secret_name: "{{ aws_secret_name }}"
+
   pre_tasks:
-    - name: Ensure DB credentials were actually supplied
+    - name: Ensure AWS secret name was supplied
       assert:
         that:
-          - mysql_password is defined
-          - mysql_password | length > 0
-          - mysql_root_password is defined
-          - mysql_root_password | length > 0
+          - aws_secret_name is defined
+          - aws_secret_name | length > 0
         fail_msg: >
-          mysql_password and mysql_root_password must be passed via -e
-          (or Jenkins credentials). This repo intentionally has no default
-          fallback password baked into secret.yml.j2 — never commit real
-          credentials, and never rely on a placeholder default either.
+          aws_secret_name must be passed via -e aws_secret_name=<name>.
+          Run `terraform output db_secret_name` to get it.
+
+    - name: Fetch DB credentials from AWS Secrets Manager
+      # Returns a JSON string; register it for use in the K8s Secret template.
+      shell: >
+        aws secretsmanager get-secret-value
+        --secret-id "{{ secret_name }}"
+        --region "{{ aws_region }}"
+        --query SecretString
+        --output text
+      register: secret_json_result
+      no_log: true    # suppress credential values from console output
+
+    - name: Parse secret JSON into variables
+      set_fact:
+        db_secret: "{{ secret_json_result.stdout | from_json }}"
+      no_log: true
+
   tasks:
     - name: Log in to ECR
       shell: >
@@ -29,7 +44,7 @@
     - name: Push image to ECR
       command: docker push {{ ecr_repo }}:{{ image_tag }}
 
-    - name: Apply DB Secret
+    - name: Apply DB Secret (populated from AWS Secrets Manager)
       kubernetes.core.k8s:
         state: present
         template: templates/secret.yml.j2
