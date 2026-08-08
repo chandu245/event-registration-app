@@ -16,9 +16,8 @@ pipeline {
     // They are seeded into AWS Secrets Manager by Terraform and fetched at
     // deploy time by Ansible — see ansible/deploy.yml for details.
 
-    // Extend PATH so tools installed via pip (--user) or system package managers
-    // are found even in Jenkins' non-login shell environment.
-    PATH = "/usr/local/bin:/usr/bin:/bin:/home/jenkins/.local/bin:${env.PATH}"
+    // Jenkins home is /var/lib/jenkins — pip --user installs land in .local/bin there.
+    PATH = "/var/lib/jenkins/.local/bin:/usr/local/bin:/usr/bin:/bin:${env.PATH}"
   }
 
   stages {
@@ -74,15 +73,33 @@ pipeline {
       }
     }
 
+    stage('Install Ansible') {
+      when { expression { params.ACTION == 'Deploy' } }
+      steps {
+        sh '''
+          set -e
+          if command -v ansible-playbook &>/dev/null; then
+            echo "ansible-playbook already installed: $(ansible-playbook --version | head -1)"
+          else
+            echo "ansible-playbook not found — installing via pip..."
+            pip3 install --user --quiet ansible kubernetes
+            # Confirm it landed where we expect
+            ls ~/.local/bin/ansible-playbook
+            echo "Installed: $(~/.local/bin/ansible-playbook --version | head -1)"
+          fi
+
+          # Always ensure the kubernetes.core collection is present
+          ansible-galaxy collection install kubernetes.core --upgrade -p ~/.ansible/collections
+        '''
+      }
+    }
+
     stage('Deploy via Ansible') {
       when { expression { params.ACTION == 'Deploy' } }
       steps {
-        sh '''#!/bin/bash -l
-          # -l (login shell) sources /etc/profile and ~/.bash_profile so that
-          # pip-installed tools like ansible-playbook are on PATH regardless of
-          # where Jenkins installed them.
+        sh '''
           set -e
-          which ansible-playbook   # prints resolved path for debugging
+          echo "Using ansible-playbook at: $(which ansible-playbook)"
           cd ansible
           ansible-playbook -i inventory.ini deploy.yml \
             -e ecr_repo_url=$ECR_REPO \
