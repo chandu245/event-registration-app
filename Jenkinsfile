@@ -152,6 +152,20 @@ pipeline {
       }
     }
 
+    stage('Remove EBS Volumes') {
+      when { expression { params.ACTION == 'Destroy' } }
+      steps {
+        // PVCs are created by Kubernetes (not Terraform) so terraform destroy
+        // does not remove them. Deleting the PVC triggers K8s to release and
+        // delete the underlying EBS volume automatically.
+        // --wait ensures the volume is fully deleted before the cluster is torn down.
+        sh '''
+          kubectl delete pvc --all --all-namespaces --ignore-not-found=true
+          kubectl wait --for=delete pvc --all --all-namespaces --timeout=120s || true
+        '''
+      }
+    }
+
     stage('Destroy Infra') {
       when { expression { params.ACTION == 'Destroy' } }
       steps {

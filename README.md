@@ -620,10 +620,16 @@ kubectl annotate externalsecret db-external-secret \
 
 **Manually:**
 ```bash
-# Delete the LoadBalancer service first — this releases the ELB in AWS
+# Step 1 — Delete the LoadBalancer service — releases the ELB in AWS
 kubectl delete svc tomcat-service
 
-# Destroy all infrastructure
+# Step 2 — Delete all PVCs — this releases and deletes the EBS volumes in AWS
+# EBS volumes are created by Kubernetes, not Terraform, so terraform destroy
+# will not remove them. You must delete them manually or they keep charging you.
+kubectl delete pvc --all --all-namespaces
+kubectl wait --for=delete pvc --all --all-namespaces --timeout=120s
+
+# Step 3 — Destroy all infrastructure
 cd terraform && terraform destroy -auto-approve
 ```
 
@@ -643,6 +649,7 @@ cd terraform/bootstrap && terraform destroy -auto-approve
 | Pods stuck in `Pending` | The EBS CSI driver is not running so PVCs can't be bound to disks | `kubectl get pods -n kube-system \| grep ebs-csi` — all pods should be Running |
 | ESO secret not syncing | IRSA trust policy mismatch — ESO can't assume the IAM role | Check ESO pod logs: `kubectl logs -n external-secrets deploy/external-secrets` |
 | ELB DNS not resolving | DNS propagation takes time after a new ELB is created | Wait 2-3 minutes and try again |
+| EBS volumes still exist after destroy | PVCs are created by Kubernetes not Terraform so `terraform destroy` doesn't remove them | Delete PVCs before destroying: `kubectl delete pvc --all --all-namespaces` |
 
 ---
 
