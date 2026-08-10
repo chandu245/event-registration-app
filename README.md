@@ -141,12 +141,20 @@ ansible-galaxy collection install kubernetes.core
 curl -LO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
 sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
 
-# 4. Install Terraform
+# 4. Install Helm (used by Ansible to install External Secrets Operator)
+curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+# 5. Install Terraform
 sudo apt-get update && sudo apt-get install -y gnupg software-properties-common
 wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor | sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg
 echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
 sudo apt-get update && sudo apt-get install -y terraform
+
+# 6. Verify all tools are installed correctly
+docker --version && ansible --version && kubectl version --client && helm version --short && terraform version
 ```
+
+> **Note:** All tools above must be installed on the Jenkins EC2 instance before running the pipeline. The pipeline does not auto-install any of these.
 
 ### Jenkins Credentials
 
