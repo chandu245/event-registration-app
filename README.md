@@ -230,10 +230,7 @@ git clone https://github.com/YOUR_GITHUB_USERNAME/event-registration-app.git
 cd event-registration-app
 ```
 
-Also update the GitHub URL in `Jenkinsfile` to point to your forked repo:
-```groovy
-git url: 'https://github.com/YOUR_GITHUB_USERNAME/event-registration-app.git', branch: 'main'
-```
+> The Jenkinsfile uses `checkout scm` so it automatically uses whichever repo you configure in Jenkins — no hardcoded URLs to change.
 
 ### Step 2 — Set your AWS account ID in backend.tf
 

@@ -23,7 +23,9 @@ pipeline {
 
     stage('Checkout') {
       steps {
-        git url: 'https://github.com/chandu245/event-registration-app.git', branch: 'main'
+        // checkout scm uses whatever repo is configured in the Jenkins job —
+        // works for the original repo and any fork without changing this file.
+        checkout scm
       }
     }
 
@@ -44,10 +46,18 @@ pipeline {
     }
 
     stage('Update kubeconfig') {
+      when { expression { params.ACTION == 'Deploy' } }
+      steps {
+        sh 'aws eks update-kubeconfig --name event-app-cluster --region $AWS_REGION'
+      }
+    }
+
+    stage('Update kubeconfig for Destroy') {
+      when { expression { params.ACTION == 'Destroy' } }
       steps {
         sh '''
           aws eks update-kubeconfig --name event-app-cluster --region $AWS_REGION \
-            || echo "Cluster not reachable — may not exist yet, or already destroyed"
+            || echo "Cluster already destroyed — skipping kubeconfig update"
         '''
       }
     }
