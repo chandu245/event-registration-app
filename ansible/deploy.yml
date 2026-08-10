@@ -1,56 +1,65 @@
 - hosts: local
   gather_facts: false
   vars:
-    ecr_repo: "{{ ecr_repo_url }}"
-    image_tag: "{{ build_number }}"
+    ecr_repo:   "{{ ecr_repo_url }}"
+    image_tag:  "{{ build_number }}"
     aws_region: "{{ aws_region | default('ap-southeast-1') }}"
     secret_name: "{{ aws_secret_name }}"
 
   pre_tasks:
-    - name: Ensure AWS secret name was supplied
+    - name: Ensure required variables were supplied
       assert:
         that:
-          - aws_secret_name is defined
-          - aws_secret_name | length > 0
+          - ecr_repo_url is defined and ecr_repo_url | length > 0
+          - aws_secret_name is defined and aws_secret_name | length > 0
         fail_msg: >
-          aws_secret_name must be passed via -e aws_secret_name=<name>.
-          Run `terraform output db_secret_name` to get it.
-
-    - name: Fetch DB credentials from AWS Secrets Manager
-      # Returns a JSON string; register it for use in the K8s Secret template.
-      shell: >
-        aws secretsmanager get-secret-value
-        --secret-id "{{ secret_name }}"
-        --region "{{ aws_region }}"
-        --query SecretString
-        --output text
-      register: secret_json_result
-      no_log: true    # suppress credential values from console output
-
-    - name: Parse secret JSON into variables
-      set_fact:
-        db_secret: "{{ secret_json_result.stdout | from_json }}"
-      no_log: true
+          ecr_repo_url and aws_secret_name are required.
+          They are read from Terraform outputs by the Jenkinsfile automatically.
 
   tasks:
+    # ── Docker image ──────────────────────────────────────────────────────
+
     - name: Log in to ECR
       shell: >
         aws ecr get-login-password --region {{ aws_region }} |
         docker login --username AWS --password-stdin {{ ecr_repo }}
 
     - name: Build Docker image
-      # Use playbook_dir for an absolute path — the Ansible `command` module
-      # does not guarantee that the CWD matches the playbook directory, so a
-      # relative `../app` can silently resolve to the wrong location.
+      # playbook_dir resolves to an absolute path — avoids CWD ambiguity
+      # with the Ansible `command` module.
       command: docker build -t {{ ecr_repo }}:{{ image_tag }} {{ playbook_dir }}/../app
 
     - name: Push image to ECR
       command: docker push {{ ecr_repo }}:{{ image_tag }}
 
-    - name: Apply DB Secret (populated from AWS Secrets Manager)
+    # ── External Secrets Operator ─────────────────────────────────────────
+    # ESO was installed by Terraform (helm_release). We just need to create
+    # the ClusterSecretStore (points ESO at AWS SM) and the ExternalSecret
+    # (tells ESO which secret to sync and what K8s Secret to create).
+    # ESO then creates and manages "db-secret" automatically — no credentials
+    # are fetched or handled by Ansible.
+
+    - name: Apply ClusterSecretStore (ESO → AWS Secrets Manager bridge)
       kubernetes.core.k8s:
         state: present
-        template: templates/secret.yml.j2
+        template: templates/cluster-secret-store.yml.j2
+
+    - name: Apply ExternalSecret (creates db-secret K8s Secret via ESO)
+      kubernetes.core.k8s:
+        state: present
+        template: templates/external-secret.yml.j2
+
+    - name: Wait for ESO to sync db-secret
+      kubernetes.core.k8s_info:
+        kind: Secret
+        namespace: default
+        name: db-secret
+      register: db_secret_info
+      until: db_secret_info.resources | length > 0
+      retries: 12
+      delay: 10
+
+    # ── MySQL ─────────────────────────────────────────────────────────────
 
     - name: Apply MySQL headless service
       kubernetes.core.k8s:
@@ -76,7 +85,9 @@
         wait_condition:
           type: Ready
           status: "True"
-        wait_timeout: 180
+        wait_timeout: 240
+
+    # ── Tomcat app ────────────────────────────────────────────────────────
 
     - name: Apply Tomcat Deployment
       kubernetes.core.k8s:

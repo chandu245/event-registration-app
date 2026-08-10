@@ -1,16 +1,23 @@
-version: "3.8"
+# Local development only — NOT used in production.
+# Production runs on AWS EKS with credentials from AWS Secrets Manager.
+#
+# Usage:
+#   cp .env.example .env   # then edit .env with real passwords
+#   docker compose up -d
+#   open http://localhost:8081
 services:
   mysql:
     image: mysql:8.0
-    environment:
-      MYSQL_ROOT_PASSWORD: RootChangeMe123!
-      MYSQL_DATABASE: eventdb
-      MYSQL_USER: eventuser
-      MYSQL_PASSWORD: ChangeMe123!
+    env_file: .env
     ports:
       - "3306:3306"
     volumes:
       - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "--silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
 
   tomcat-app:
     build: ./app
@@ -19,9 +26,10 @@ services:
     environment:
       DB_URL: jdbc:mysql://mysql:3306/eventdb
       DB_USER: eventuser
-      DB_PASS: ChangeMe123!
+      DB_PASS: ${MYSQL_PASSWORD}
     depends_on:
-      - mysql
+      mysql:
+        condition: service_healthy
 
 volumes:
   mysql-data:

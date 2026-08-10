@@ -10,13 +10,12 @@ pipeline {
   }
 
   environment {
-    ECR_REPO   = credentials('ecr-repo-url')  // Jenkins credential: Secret text
+    ECR_REPO   = credentials('ecr-repo-url')  // Only Jenkins credential needed
     AWS_REGION = 'ap-southeast-1'
-    // DB passwords are no longer stored in Jenkins.
-    // They are seeded into AWS Secrets Manager by Terraform and fetched at
-    // deploy time by Ansible — see ansible/deploy.yml for details.
+    // No DB passwords here — Terraform generates them via random_password and
+    // stores them in AWS Secrets Manager. ESO syncs them into K8s automatically.
 
-    // Jenkins home is /var/lib/jenkins — pip --user installs land in .local/bin there.
+    // pip --user installs land in the Jenkins home .local/bin
     PATH = "/var/lib/jenkins/.local/bin:/usr/local/bin:/usr/bin:/bin:${env.PATH}"
   }
 
@@ -28,27 +27,15 @@ pipeline {
       }
     }
 
-    // ------------------- DEPLOY PATH -------------------
-
-    // NOTE: No 'Build WAR' stage here. The Dockerfile is a multi-stage build
-    // that runs `mvn clean package` inside a Maven container and copies the WAR
-    // to Tomcat. Building on the Jenkins agent would produce a WAR that Docker
-    // never uses, and would require Maven installed on the agent unnecessarily.
+    // ── DEPLOY ─────────────────────────────────────────────────────────────
 
     stage('Provision Infra') {
       when { expression { params.ACTION == 'Deploy' } }
       steps {
-        // Passwords are injected from Jenkins environment variables TF_VAR_mysql_password
-        // and TF_VAR_mysql_root_password, which you set once at the Jenkins system level
-        // (Manage Jenkins → System → Global properties → Environment variables).
-        // Terraform uses them to seed the AWS Secrets Manager secret on first apply.
+        // Terraform generates passwords internally (random_password resource).
+        // No variables, no secrets, no credentials needed here.
         sh '''
           set -e
-          # Fail fast with a clear message if the DB password env vars are missing.
-          # Without this, `terraform apply -input=false` exits with a cryptic error.
-          : "${TF_VAR_mysql_password:?TF_VAR_mysql_password must be set in Jenkins Global env vars (Manage Jenkins → System → Global properties)}"
-          : "${TF_VAR_mysql_root_password:?TF_VAR_mysql_root_password must be set in Jenkins Global env vars}"
-
           cd terraform
           terraform init -input=false
           terraform apply -auto-approve -input=false
@@ -58,43 +45,23 @@ pipeline {
 
     stage('Update kubeconfig') {
       steps {
-        sh 'aws eks update-kubeconfig --name event-app-cluster --region $AWS_REGION || echo "Cluster not reachable — may not exist yet, or already destroyed"'
+        sh '''
+          aws eks update-kubeconfig --name event-app-cluster --region $AWS_REGION \
+            || echo "Cluster not reachable — may not exist yet, or already destroyed"
+        '''
       }
     }
 
-    stage('Fetch secret name from Terraform output') {
+    stage('Fetch Terraform outputs') {
       when { expression { params.ACTION == 'Deploy' } }
       steps {
         script {
-          // Resolve the secret name that Terraform just created so Ansible
-          // can pass it into the Kubernetes deployment as AWS_SECRET_NAME.
           env.AWS_SECRET_NAME = sh(
             script: 'cd terraform && terraform output -raw db_secret_name',
             returnStdout: true
           ).trim()
           echo "DB secret name: ${env.AWS_SECRET_NAME}"
         }
-      }
-    }
-
-    stage('Install Ansible') {
-      when { expression { params.ACTION == 'Deploy' } }
-      steps {
-        sh '''
-          set -e
-          if command -v ansible-playbook &>/dev/null; then
-            echo "ansible-playbook already installed: $(ansible-playbook --version | head -1)"
-          else
-            echo "ansible-playbook not found — installing via pip..."
-            pip3 install --user --quiet ansible kubernetes
-            # Confirm it landed where we expect
-            ls ~/.local/bin/ansible-playbook
-            echo "Installed: $(~/.local/bin/ansible-playbook --version | head -1)"
-          fi
-
-          # Always ensure the kubernetes.core collection is present
-          ansible-galaxy collection install kubernetes.core --upgrade -p ~/.ansible/collections
-        '''
       }
     }
 
@@ -126,13 +93,12 @@ pipeline {
                 returnStdout: true
               ).trim()
               if (dns) { return true }
-              echo 'Waiting for ELB DNS to be assigned...'
+              echo 'Waiting for ELB DNS...'
               sleep(time: 15, unit: 'SECONDS')
               return false
             }
           }
           env.APP_URL = "http://${dns}"
-          echo "ELB DNS assigned: ${env.APP_URL}"
 
           timeout(time: 3, unit: 'MINUTES') {
             waitUntil {
@@ -141,7 +107,7 @@ pipeline {
                 returnStdout: true
               ).trim()
               if (code == '200') { return true }
-              echo "App not responding yet (HTTP ${code}), retrying..."
+              echo "HTTP ${code} — waiting..."
               sleep(time: 15, unit: 'SECONDS')
               return false
             }
@@ -155,11 +121,13 @@ pipeline {
       }
     }
 
-    // ------------------- DESTROY PATH -------------------
+    // ── DESTROY ────────────────────────────────────────────────────────────
 
     stage('Remove LoadBalancer Service') {
       when { expression { params.ACTION == 'Destroy' } }
       steps {
+        // Delete the ELB before destroying the cluster — otherwise the ELB
+        // becomes orphaned and keeps charging money.
         sh 'kubectl delete svc tomcat-service --ignore-not-found=true'
       }
     }
@@ -180,7 +148,7 @@ pipeline {
     success {
       script {
         if (params.ACTION == 'Deploy' && env.APP_URL) {
-          echo "Deploy complete — access your app at: ${env.APP_URL}"
+          echo "Deploy complete — ${env.APP_URL}"
         } else {
           echo "${params.ACTION} completed successfully."
         }

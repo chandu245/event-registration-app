@@ -36,3 +36,9 @@ Thumbs.db
 .env
 *.pem
 *.key
+
+# Microsoft Office temporary files
+~$*
+
+# Superseded templates (kept on disk for reference, not tracked)
+ansible/templates/secret.yml.j2
