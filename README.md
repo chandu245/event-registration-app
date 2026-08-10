@@ -221,11 +221,18 @@ Zero manual credential setup.
 
 ## First-Time Setup
 
-### Step 1 — Clone the repo
+### Step 1 — Fork and clone the repo
+
+Click **Fork** on GitHub to create your own copy, then clone it:
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/event-registration-app.git
+git clone https://github.com/YOUR_GITHUB_USERNAME/event-registration-app.git
 cd event-registration-app
+```
+
+Also update the GitHub URL in `Jenkinsfile` to point to your forked repo:
+```groovy
+git url: 'https://github.com/YOUR_GITHUB_USERNAME/event-registration-app.git', branch: 'main'
 ```
 
 ### Step 2 — Set your AWS account ID in backend.tf
