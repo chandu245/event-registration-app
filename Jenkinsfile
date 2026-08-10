@@ -79,7 +79,7 @@ pipeline {
           # Ensure helm is installed (required for ESO install task in Ansible)
           if ! command -v helm &>/dev/null; then
             echo "Installing helm..."
-            curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+            sudo curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
           fi
           cd ansible
           ansible-playbook -i inventory.ini deploy.yml \
