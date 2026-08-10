@@ -1,163 +1,318 @@
-# Event Registration App — Production-Grade EKS Deployment
+# Event Registration App — DevOps Learning Project
 
-A Java/Tomcat web application that demonstrates a **real-world DevOps pipeline** on AWS. The project covers everything from writing the application code to deploying it on Kubernetes with automated secrets management — no passwords ever touch a CI/CD pipeline or a config file.
+A Java web application deployed on AWS using a real DevOps pipeline. Built for **beginners who want to understand how DevOps works in practice** — not just theory.
 
-> **What you'll learn:** Terraform, Ansible, Jenkins, AWS EKS, ECR, Secrets Manager, External Secrets Operator, IRSA, and Docker — all wired together into a single automated pipeline.
+Every step, every tool, and every concept is explained in plain English below.
+
+> **What you will build:** A fully automated pipeline where pushing code to GitHub triggers Jenkins to provision AWS infrastructure with Terraform, build a Docker image, push it to ECR, and deploy it to a Kubernetes cluster on EKS — with passwords auto-generated and stored in AWS Secrets Manager, never visible to any human.
+
+---
+
+## What Problem Does This Project Solve?
+
+Most tutorials show you how to manually deploy an app by SSHing into a server and running commands. That works for one person, once. In a real company:
+
+- Multiple developers push code every day
+- Servers must be created and destroyed automatically
+- Passwords must never be written in code or config files
+- Everything must be repeatable, automated, and auditable
+
+This project demonstrates all of that.
+
+---
+
+## Concepts You Will Learn
+
+| Concept | What it means in simple terms |
+|---------|------------------------------|
+| **Docker** | Package your app and everything it needs into a single portable box (container) |
+| **Kubernetes (EKS)** | A system that runs and manages your containers across multiple servers |
+| **Terraform** | Write code that creates AWS infrastructure (servers, networks, databases) |
+| **Ansible** | Automate tasks on servers — install software, run commands, deploy apps |
+| **Jenkins** | A server that watches your GitHub repo and runs your deployment automatically |
+| **AWS Secrets Manager** | A secure vault in AWS where passwords are stored encrypted |
+| **External Secrets Operator** | A Kubernetes component that automatically pulls secrets from AWS and makes them available to your pods |
+| **IRSA** | A way to give a specific Kubernetes pod permission to access AWS — without using passwords |
+| **ECR** | AWS's private Docker image registry — like Docker Hub but for your own images |
+| **ELB** | AWS's Load Balancer — distributes traffic to your app and gives it a public URL |
 
 ---
 
 ## Architecture Overview
 
+This diagram shows how everything connects:
+
 ```
 Developer pushes code to GitHub
         │
+        │  GitHub tells Jenkins "new code is here"
         ▼
-  Jenkins Pipeline
+  Jenkins Pipeline (runs on an EC2 server)
         │
-        ├─► Terraform ──► provisions VPC, EKS cluster, ECR repo
-        │         │        generates DB passwords (random_password)
-        │         └──────► stores passwords in AWS Secrets Manager
+        ├─► Terraform
+        │       │  Creates all AWS infrastructure:
+        │       │  VPC (private network), EKS cluster (Kubernetes),
+        │       │  ECR (image registry), IAM roles, Secrets Manager
+        │       └─► Auto-generates DB passwords, stores in Secrets Manager
         │
-        ├─► kubectl ──► configures access to the EKS cluster
+        ├─► kubectl (Kubernetes CLI)
+        │       └─► Connects Jenkins to the EKS cluster
         │
         └─► Ansible
-              ├─► Builds Docker image → pushes to ECR
-              ├─► Installs External Secrets Operator via Helm
-              ├─► Creates ClusterSecretStore (ESO ↔ AWS Secrets Manager bridge)
-              ├─► Creates ExternalSecret (ESO auto-creates K8s Secret from SM)
-              ├─► Deploys MySQL StatefulSet (reads credentials from K8s Secret)
-              └─► Deploys Tomcat app (reads credentials from K8s Secret)
+              ├─► Builds Docker image from your Java code
+              ├─► Pushes image to ECR
+              ├─► Installs External Secrets Operator into the cluster
+              ├─► Tells ESO: "sync passwords from AWS Secrets Manager into K8s"
+              ├─► Deploys MySQL database (reads passwords from K8s Secret)
+              └─► Deploys Tomcat app (reads passwords from K8s Secret)
 ```
 
-### Secrets Flow
+### How Secrets (Passwords) Flow
 
-Passwords are **never set by a human**. Terraform generates them automatically and the External Secrets Operator syncs them into Kubernetes:
+This is the most important concept in the project. **No human ever sets or sees the database password:**
 
 ```
-Terraform random_password
-        │  (auto-generates 24-char password)
+Step 1: Terraform generates a random 24-character password
+        │
         ▼
-AWS Secrets Manager
-        │  (encrypted at rest, IAM-controlled access)
+Step 2: Password is stored in AWS Secrets Manager (encrypted)
+        │
         ▼
-External Secrets Operator   ◄── IRSA: scoped IAM role, ESO pod only
-        │  (syncs every 1 hour)
+Step 3: External Secrets Operator reads it from AWS
+        │  (ESO has permission via IRSA — a scoped IAM role)
         ▼
-Kubernetes Secret (db-secret)
-        │  (mounted as env vars via envFrom)
+Step 4: ESO creates a Kubernetes Secret called "db-secret"
+        │  (automatically refreshed every 1 hour)
         ▼
-MySQL pod  +  Tomcat pod
+Step 5: MySQL pod reads password from db-secret on startup
+        Tomcat pod reads password from db-secret on startup
 ```
 
 ---
 
 ## Tech Stack
 
-| Layer | Technology |
-|-------|-----------|
-| Application | Java 17, Tomcat 10, MySQL 8 |
-| Containerisation | Docker (multi-stage build) |
-| Container Registry | AWS ECR |
-| Orchestration | AWS EKS (Kubernetes 1.36) |
-| Infrastructure as Code | Terraform |
-| Configuration Management | Ansible |
-| CI/CD | Jenkins |
-| Secrets Management | AWS Secrets Manager + External Secrets Operator |
-| IAM | IRSA (IAM Roles for Service Accounts) |
-| Storage | AWS EBS gp3 (via EBS CSI driver) |
-| Load Balancing | AWS ELB (provisioned automatically by K8s) |
+| Layer | Technology | Why we use it |
+|-------|-----------|---------------|
+| Application | Java 17, Tomcat 10 | The web app that users interact with |
+| Database | MySQL 8 | Stores event registrations |
+| Containerisation | Docker | Packages the app so it runs the same everywhere |
+| Container Registry | AWS ECR | Stores our Docker images privately in AWS |
+| Orchestration | AWS EKS (Kubernetes) | Runs and manages our containers in the cloud |
+| Infrastructure as Code | Terraform | Creates all AWS resources with code |
+| Configuration Management | Ansible | Automates the deployment steps |
+| CI/CD | Jenkins | Automates the pipeline end to end |
+| Secrets Management | AWS Secrets Manager + ESO | Stores and syncs passwords securely |
+| IAM Scoping | IRSA | Gives only the ESO pod access to Secrets Manager |
+| Storage | AWS EBS gp3 | Persistent disk for MySQL data |
+| Load Balancing | AWS ELB | Gives the app a public URL |
 
 ---
 
 ## Repository Layout
 
+Every file in this repo and what it does:
+
 ```
 event-registration-app/
 │
-├── app/                              # Java application
-│   ├── Dockerfile                    # Multi-stage build (Maven → Tomcat)
-│   ├── pom.xml                       # Maven dependencies
+├── app/                              # The Java web application
+│   ├── Dockerfile                    # Instructions to build the Docker image
+│   ├── pom.xml                       # Maven config — lists Java dependencies
 │   └── src/main/
 │       ├── java/com/eventapp/
-│       │   ├── DBUtil.java           # Database connection (reads env vars)
-│       │   ├── RegisterServlet.java  # Handles form POST, writes to MySQL
-│       │   └── InitDbServlet.java    # Creates table on startup (with retry)
+│       │   ├── DBUtil.java           # Reads DB credentials from environment variables
+│       │   ├── RegisterServlet.java  # Handles form submission, saves to MySQL
+│       │   └── InitDbServlet.java    # Creates the DB table on app startup (with retry)
 │       └── webapp/
-│           ├── index.jsp             # Registration form (glassmorphism UI)
-│           ├── success.jsp           # Confirmation page
-│           └── WEB-INF/web.xml       # Servlet descriptor
+│           ├── index.jsp             # The registration form (HTML + CSS)
+│           ├── success.jsp           # Shown after successful registration
+│           └── WEB-INF/web.xml       # Tells Tomcat which URLs map to which servlets
 │
-├── terraform/                        # AWS infrastructure
-│   ├── bootstrap/                    # Run ONCE to create S3 + DynamoDB for state
+├── terraform/                        # All AWS infrastructure as code
+│   ├── bootstrap/                    # Run ONCE — creates S3 bucket for Terraform state
 │   │   └── main.tf
-│   ├── backend.tf                    # S3 remote state config (fill in account ID)
-│   ├── provider.tf                   # AWS + Random providers
-│   ├── variables.tf                  # Region, cluster name, instance type
-│   ├── vpc.tf                        # VPC with public subnets
-│   ├── eks.tf                        # EKS cluster and managed node group
-│   ├── ecr.tf                        # ECR container registry
-│   ├── secrets.tf                    # random_password + Secrets Manager + IRSA role
-│   └── outputs.tf                    # ECR URL, secret name, ESO role ARN
+│   ├── backend.tf                    # Tells Terraform to store state in S3
+│   ├── provider.tf                   # Tells Terraform which cloud (AWS) and versions
+│   ├── variables.tf                  # Configurable values (region, cluster name, etc.)
+│   ├── vpc.tf                        # Creates the private network (VPC + subnets)
+│   ├── eks.tf                        # Creates the Kubernetes cluster on AWS
+│   ├── ecr.tf                        # Creates the Docker image registry
+│   ├── secrets.tf                    # Creates passwords + Secrets Manager + IAM role
+│   └── outputs.tf                    # Values printed after apply (ECR URL, secret name)
 │
-├── ansible/                          # Deployment automation
-│   ├── deploy.yml                    # Main playbook
-│   ├── inventory.ini                 # Localhost target
-│   └── templates/                    # Kubernetes manifests (Jinja2)
-│       ├── cluster-secret-store.yml.j2   # ESO → AWS SM bridge
-│       ├── external-secret.yml.j2        # Tells ESO which secret to sync
-│       ├── mysql-statefulset.yml.j2      # MySQL with readiness probe
-│       ├── mysql-service.yml.j2          # Headless service for MySQL
-│       ├── deployment.yml.j2             # Tomcat deployment
-│       ├── service.yml.j2                # LoadBalancer service
-│       └── storageclass-gp3.yml.j2       # EBS gp3 StorageClass
+├── ansible/                          # Automates the deployment steps
+│   ├── deploy.yml                    # The main playbook — list of tasks to run
+│   ├── inventory.ini                 # Tells Ansible where to run (localhost)
+│   └── templates/                    # Kubernetes manifest templates
+│       ├── cluster-secret-store.yml.j2   # Tells ESO to use AWS Secrets Manager
+│       ├── external-secret.yml.j2        # Tells ESO which secret to sync into K8s
+│       ├── mysql-statefulset.yml.j2      # Runs MySQL as a StatefulSet
+│       ├── mysql-service.yml.j2          # Internal DNS name for MySQL
+│       ├── deployment.yml.j2             # Runs the Tomcat app
+│       ├── service.yml.j2                # Exposes the app via a public ELB
+│       └── storageclass-gp3.yml.j2       # Defines EBS gp3 as the storage type
 │
-├── Jenkinsfile                       # Pipeline definition (Deploy / Destroy)
-├── docker-compose.yml                # Local development only
-├── .env.example                      # Template for local dev passwords
-└── .gitignore
+├── Jenkinsfile                       # The pipeline — all stages defined as code
+├── docker-compose.yml                # Run the app locally without AWS
+├── .env.example                      # Template for local passwords
+└── .gitignore                        # Files Git should never track (secrets, build output)
 ```
+
+---
+
+## Key Concepts Explained
+
+### What is Docker and why do we use it?
+
+Without Docker, deploying a Java app means installing Java, Tomcat, and all dependencies on every server — and hoping the versions match. Docker packages everything into a single image that runs identically everywhere.
+
+Our `Dockerfile` uses a **multi-stage build**:
+- **Stage 1 (build):** Uses a Maven image to compile the Java code into a WAR file
+- **Stage 2 (runtime):** Copies only the WAR into a Tomcat image — no build tools in production
+
+### What is Kubernetes and why do we use it?
+
+Kubernetes (K8s) is a system that runs your containers and keeps them healthy. If a container crashes, K8s restarts it. If you need more capacity, K8s scales it. It also handles networking between containers.
+
+We use AWS EKS which is Amazon's managed Kubernetes — AWS handles the control plane so we just focus on deploying our app.
+
+**Key Kubernetes concepts used in this project:**
+
+- **Deployment** — runs the Tomcat app. Stateless — any pod can be replaced at any time.
+- **StatefulSet** — runs MySQL. Stateful — each pod has a fixed name and its own persistent storage. We use this because MySQL needs a stable disk that survives restarts.
+- **Service** — gives a stable network address to a group of pods. MySQL uses a headless service (internal DNS). Tomcat uses a LoadBalancer service (public ELB).
+- **Secret** — a Kubernetes object that stores sensitive data (passwords). Pods read these as environment variables.
+- **Readiness Probe** — K8s checks if a pod is actually ready before sending traffic to it. We use `mysqladmin ping` to confirm MySQL is accepting connections before Tomcat tries to connect.
+
+### What is Terraform and why do we use it?
+
+Terraform lets you describe infrastructure as code. Instead of clicking through the AWS console to create a VPC, then an EKS cluster, then ECR — you write `.tf` files and run `terraform apply`. Terraform figures out what to create, in what order.
+
+**Terraform state** is how Terraform remembers what it already created. We store state in an S3 bucket so the Jenkins server and any team member work from the same state. DynamoDB locking prevents two people from running `terraform apply` at the same time.
+
+### What is IRSA and why does it matter?
+
+IRSA stands for IAM Roles for Service Accounts. It solves a security problem:
+
+- **Old way:** Attach an IAM policy to the EC2 node group → every pod on every node can access AWS
+- **IRSA way:** Attach an IAM role to a specific Kubernetes service account → only that one pod can access AWS
+
+In our project, only the ESO pod has permission to read from Secrets Manager. Your Tomcat pod, MySQL pod, and every other pod cannot access Secrets Manager at all — even if someone hacks into them.
+
+### What is ESO (External Secrets Operator)?
+
+ESO is a Kubernetes controller — a pod that runs continuously inside your cluster and watches for `ExternalSecret` resources. When it sees one, it:
+
+1. Calls AWS Secrets Manager to get the secret value
+2. Creates a Kubernetes Secret with that value
+3. Refreshes it every hour automatically
+
+This means if you rotate a password in AWS Secrets Manager, Kubernetes picks it up within an hour — no redeployment needed.
 
 ---
 
 ## Prerequisites
 
-### 1. AWS Account
-- An AWS account with permissions to create VPC, EKS, ECR, IAM, and Secrets Manager resources
-- AWS CLI installed and configured on your local machine:
-```bash
-# Install AWS CLI
-curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-unzip awscliv2.zip && sudo ./aws/install
+### What you need before starting
 
-# Configure with your credentials
+#### 1. AWS Account
+
+You need an AWS account. If you don't have one, create one at [aws.amazon.com](https://aws.amazon.com). Note that this project will incur small AWS charges (~$0.15/hr while running). **Always destroy the infrastructure after testing.**
+
+Install and configure the AWS CLI on your local machine:
+
+```bash
+# Install AWS CLI (Linux/WSL)
+# This downloads the CLI installer from Amazon
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+sudo ./aws/install
+
+# Configure with your AWS credentials
+# You'll find your Access Key and Secret Key in AWS Console → IAM → Users → Security credentials
 aws configure
+# Enter: Access Key ID, Secret Access Key, Region (ap-southeast-1), Output format (json)
+
+# Verify it works — this should print your AWS account details
+aws sts get-caller-identity
 ```
 
-### 2. Jenkins Server (EC2)
+#### 2. Jenkins Server on EC2
 
-Launch an EC2 instance (Ubuntu 22.04, t3.medium recommended) and attach an **IAM instance role** with permissions for EKS, ECR, Secrets Manager, IAM, S3, and VPC. Jenkins uses this role to talk to AWS — no access keys needed.
+Jenkins is the CI/CD server that runs your pipeline. It must run on an **EC2 instance** (not your local machine) because it needs an IAM instance role to talk to AWS without storing credentials.
 
-Then SSH into the instance and run the following:
+**Step A — Launch an EC2 instance:**
+- AMI: Ubuntu 22.04
+- Instance type: t3.medium
+- Create a new key pair (save the .pem file — you'll need it to SSH in)
+- Security group: allow inbound on port 22 (SSH) and port 8080 (Jenkins UI)
+
+**Step B — Create and attach an IAM instance role:**
+
+Jenkins talks to AWS (EKS, ECR, Secrets Manager, etc.) using this role — no access keys needed anywhere.
+
+1. Go to AWS Console → IAM → Roles → Create Role
+2. Trusted entity: EC2
+3. Attach these policies:
+   - `AmazonEKSClusterPolicy`
+   - `AmazonEKSWorkerNodePolicy`
+   - `AmazonEC2ContainerRegistryFullAccess`
+   - `SecretsManagerReadWrite`
+   - `IAMFullAccess`
+   - `AmazonVPCFullAccess`
+   - `AmazonS3FullAccess`
+   - `AmazonDynamoDBFullAccess`
+4. Name it `jenkins-ec2-role`
+5. Attach the role to your EC2 instance: EC2 Console → Select instance → Actions → Security → Modify IAM role
+
+**Step C — SSH into the instance and install everything:**
 
 ```bash
-# ── Install Java (required by Jenkins) ───────────────────────────────────
+# SSH into your EC2 instance
+# Replace <YOUR-EC2-IP> with the public IP of your instance
+# Replace <YOUR-KEY.pem> with the path to your key file
+ssh -i <YOUR-KEY.pem> ubuntu@<YOUR-EC2-IP>
+```
+
+Once inside, run these commands one section at a time:
+
+```bash
+# ── Install Java ──────────────────────────────────────────────────────────
+# Jenkins requires Java to run
 sudo apt-get update
 sudo apt-get install -y fontconfig openjdk-17-jre
 
+# Verify Java is installed
+java -version
+```
+
+```bash
 # ── Install Jenkins ───────────────────────────────────────────────────────
+# Add the Jenkins package repository to apt
 sudo wget -O /usr/share/keyrings/jenkins-keyring.asc \
   https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key
 echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc]" \
   https://pkg.jenkins.io/debian-stable binary/ | sudo tee \
   /etc/apt/sources.list.d/jenkins.list > /dev/null
+
+# Install Jenkins
 sudo apt-get update
 sudo apt-get install -y jenkins
-sudo systemctl enable jenkins && sudo systemctl start jenkins
 
-# Get the initial admin password
+# Start Jenkins and enable it to start on boot
+sudo systemctl enable jenkins
+sudo systemctl start jenkins
+
+# Get the initial admin password — you'll need this to log in for the first time
 sudo cat /var/lib/jenkins/secrets/initialAdminPassword
+```
 
+Open your browser and go to `http://<YOUR-EC2-IP>:8080`. Enter the password from above, install the suggested plugins, and create an admin user.
+
+```bash
 # ── Install Docker ────────────────────────────────────────────────────────
+# Docker is used to build and push the container image
 sudo apt-get install -y ca-certificates curl
 sudo install -m 0755 -d /etc/apt/keyrings
 sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
@@ -170,23 +325,52 @@ echo "deb [arch=$(dpkg --print-architecture) \
 sudo apt-get update
 sudo apt-get install -y docker-ce docker-ce-cli containerd.io
 
-# Allow Jenkins to run Docker commands
+# Allow Jenkins to run Docker without sudo
+# Without this, Jenkins will get "permission denied" when it tries to build images
 sudo usermod -aG docker jenkins
 sudo systemctl restart jenkins
 
+# Verify Docker works
+docker --version
+```
+
+```bash
 # ── Install Ansible ───────────────────────────────────────────────────────
+# Ansible runs the deployment tasks (build image, deploy to K8s, etc.)
 sudo apt-get install -y python3-pip
 pip3 install --user ansible kubernetes
+
+# Install the Kubernetes collection for Ansible
+# This gives Ansible the ability to apply K8s manifests
 ansible-galaxy collection install kubernetes.core
 
+# Verify Ansible works
+ansible --version
+```
+
+```bash
 # ── Install kubectl ───────────────────────────────────────────────────────
+# kubectl is the command-line tool for interacting with Kubernetes
 curl -LO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
 sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
 
+# Verify kubectl works
+kubectl version --client
+```
+
+```bash
 # ── Install Helm ──────────────────────────────────────────────────────────
+# Helm is a package manager for Kubernetes
+# We use it to install External Secrets Operator into the cluster
 curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
+# Verify Helm works
+helm version --short
+```
+
+```bash
 # ── Install Terraform ─────────────────────────────────────────────────────
+# Terraform creates all the AWS infrastructure
 sudo apt-get install -y gnupg software-properties-common
 wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor | \
   sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg > /dev/null
@@ -195,27 +379,22 @@ echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] \
   sudo tee /etc/apt/sources.list.d/hashicorp.list
 sudo apt-get update && sudo apt-get install -y terraform
 
-# ── Verify everything is installed ───────────────────────────────────────
-java -version
-jenkins --version
-docker --version
-ansible --version
-kubectl version --client
-helm version --short
+# Verify Terraform works
 terraform version
 ```
 
-> Open Jenkins in your browser at `http://<EC2-PUBLIC-IP>:8080`, complete the setup wizard, and install the recommended plugins.
+```bash
+# ── Final verification — all tools should print their versions ────────────
+java -version && docker --version && ansible --version && \
+kubectl version --client && helm version --short && terraform version
+```
 
-### 3. Jenkins Credentials
+#### 3. Jenkins Credentials
 
-**No credentials required.** The pipeline derives everything it needs automatically:
-
-- **ECR URL** — read from `terraform output` after infra is provisioned
-- **DB passwords** — auto-generated by Terraform, stored in AWS Secrets Manager
-- **AWS access** — provided by the EC2 instance role on the Jenkins server
-
-Zero manual credential setup.
+**None required.** This pipeline derives everything automatically:
+- ECR URL — read from Terraform output after infra is provisioned
+- DB passwords — auto-generated by Terraform, stored in AWS Secrets Manager
+- AWS access — provided by the EC2 instance role
 
 ---
 
@@ -223,100 +402,138 @@ Zero manual credential setup.
 
 ### Step 1 — Fork and clone the repo
 
-Click **Fork** on GitHub to create your own copy, then clone it:
+**Fork** means making your own copy of this repo under your GitHub account so you can push changes to it.
+
+1. Click **Fork** at the top right of this GitHub page
+2. Clone your fork to your local machine:
 
 ```bash
+# Replace YOUR_GITHUB_USERNAME with your actual GitHub username
 git clone https://github.com/YOUR_GITHUB_USERNAME/event-registration-app.git
 cd event-registration-app
 ```
 
-> The Jenkinsfile uses `checkout scm` so it automatically uses whichever repo you configure in Jenkins — no hardcoded URLs to change.
+> The Jenkinsfile uses `checkout scm` which automatically uses whichever repo you configure in Jenkins — no hardcoded URLs to change.
 
 ### Step 2 — Set your AWS account ID in backend.tf
 
-Get your account ID:
+Terraform needs to know where to store its state. We use an S3 bucket named after your AWS account ID to make it unique.
+
 ```bash
+# This command prints your AWS account ID
 aws sts get-caller-identity --query Account --output text
 ```
 
-Open `terraform/backend.tf` and replace `YOUR_AWS_ACCOUNT_ID` with that number.
+Open `terraform/backend.tf` and replace `YOUR_AWS_ACCOUNT_ID` with the number printed above.
 
-### Step 3 — Bootstrap the S3 remote state backend
+**What is backend.tf?**
+Terraform keeps a record of everything it has created in a "state file". By default this is a local file on your machine — which means Jenkins can't see it. We store it in S3 so both your local machine and Jenkins work from the same state.
 
-Run this **once** from your local machine. It creates the S3 bucket and DynamoDB table that Terraform uses to store state:
+### Step 3 — Bootstrap the S3 state backend
+
+This is the **only manual step** you need to run before the pipeline takes over. It creates the S3 bucket and DynamoDB table that Terraform uses to store state.
 
 ```bash
 cd terraform/bootstrap
+
+# Download the AWS provider plugin for Terraform
 terraform init
+
+# Create the S3 bucket and DynamoDB table
 terraform apply -auto-approve
 ```
 
-> This is the only manual step required. The bootstrap cannot run inside the pipeline because the S3 bucket must exist before Terraform can initialise its backend.
+**Why can't the pipeline do this?**
+Terraform needs the S3 bucket to exist before it can store state in it. It's a chicken-and-egg problem — you can't use S3 as a backend until the bucket exists, and the bucket doesn't exist until you create it. So we create it once manually with a separate bootstrap config.
+
+**This only needs to run once ever.** Even if you destroy and redeploy the main infrastructure many times, the bootstrap resources persist.
 
 ### Step 4 — Configure the Jenkins pipeline
 
-In Jenkins, create a new **Pipeline** job:
-- Definition: Pipeline script from SCM
-- SCM: Git
-- Repository URL: your GitHub repo URL
-- Branch: `*/main`
-- Script Path: `Jenkinsfile`
+In Jenkins (open `http://<YOUR-EC2-IP>:8080` in your browser):
+
+1. Click **New Item**
+2. Enter a name (e.g. `event-registration-app`)
+3. Select **Pipeline** and click OK
+4. Under **Pipeline** section:
+   - Definition: `Pipeline script from SCM`
+   - SCM: `Git`
+   - Repository URL: your forked repo URL (e.g. `https://github.com/YOUR_GITHUB_USERNAME/event-registration-app.git`)
+   - Branch: `*/main`
+   - Script Path: `Jenkinsfile`
+5. Click **Save**
 
 ### Step 5 — Push your changes and run the pipeline
 
 ```bash
+# Stage your changes
 git add terraform/backend.tf
-git commit -m "Configure S3 backend with account ID"
+
+# Commit with a message describing what you changed
+git commit -m "Configure S3 backend with my AWS account ID"
+
+# Push to your GitHub fork
 git push origin main
 ```
 
-Then in Jenkins: **Build with Parameters → ACTION = Deploy**.
+Now in Jenkins:
+1. Click on your pipeline job
+2. Click **Build with Parameters**
+3. Select **ACTION = Deploy**
+4. Click **Build**
 
-The pipeline will provision all infrastructure, fetch the ECR URL automatically from Terraform output, and deploy the application — no manual intervention needed.
+Watch the pipeline run through each stage. The first run takes about 20-30 minutes because it provisions the entire EKS cluster from scratch. At the end, Jenkins will print the live URL of your app.
 
 ---
 
-## Pipeline Stages
+## Pipeline Stages Explained
 
 ### Deploy
 
-| Stage | What happens |
-|-------|-------------|
-| **Checkout** | Clones the `main` branch from GitHub |
-| **Provision Infra** | `terraform apply` — creates VPC, EKS cluster, ECR repo, Secrets Manager secret, and IRSA role |
-| **Update kubeconfig** | Configures `kubectl` to point at the EKS cluster |
-| **Fetch Terraform outputs** | Reads the Secrets Manager secret name and ESO IAM role ARN from Terraform |
-| **Deploy via Ansible** | Installs ESO via Helm, applies ESO config, deploys MySQL and Tomcat |
-| **Wait & Verify** | Polls until the ELB returns HTTP 200, then prints the live app URL |
+| Stage | What it does | Why |
+|-------|-------------|-----|
+| **Checkout** | Downloads your code from GitHub | Jenkins needs the latest code to build and deploy |
+| **Provision Infra** | Runs `terraform apply` — creates VPC, EKS, ECR, Secrets Manager, IAM roles | Creates all the AWS infrastructure the app needs to run |
+| **Update kubeconfig** | Runs `aws eks update-kubeconfig` | Gives Jenkins's kubectl the credentials to talk to your EKS cluster |
+| **Fetch Terraform outputs** | Reads ECR URL, secret name, ESO role ARN from Terraform | These values are needed by Ansible in the next stage |
+| **Deploy via Ansible** | Installs ESO, applies all K8s manifests, builds and pushes Docker image | Actually deploys the app to the cluster |
+| **Wait & Verify** | Polls until the ELB returns HTTP 200 | Confirms the app is live before declaring success |
 
 ### Destroy
 
-| Stage | What happens |
-|-------|-------------|
-| **Remove LoadBalancer Service** | Deletes the K8s service so AWS releases the ELB before cluster deletion |
-| **Destroy Infra** | `terraform destroy` — tears down all AWS resources |
+| Stage | What it does | Why |
+|-------|-------------|-----|
+| **Remove LoadBalancer Service** | Deletes the K8s LoadBalancer service | Must be done before destroying the cluster — otherwise AWS keeps the ELB running and you keep paying for it |
+| **Destroy Infra** | Runs `terraform destroy` | Tears down all AWS resources so you stop being charged |
 
-> **Note:** The S3 bucket and DynamoDB table created by `terraform/bootstrap` are **not** destroyed by the pipeline. They persist across destroy/redeploy cycles. Only destroy them manually when you are completely done with the project.
+> **Important:** The S3 bucket and DynamoDB table (bootstrap) are NOT destroyed by this pipeline. They survive so your Terraform state is preserved between destroy/redeploy cycles.
 
 ---
 
 ## Manual Deployment (Without Jenkins)
 
+If you want to run the deployment from your local machine instead of Jenkins:
+
 ```bash
-# 1. Provision infrastructure
+# Step 1 — Go to the terraform directory
 cd terraform
+
+# Step 2 — Initialise Terraform (downloads providers, connects to S3 backend)
 terraform init
+
+# Step 3 — Create all AWS infrastructure
+# This takes 15-20 minutes on first run
 terraform apply -auto-approve
 
-# 2. Configure kubectl
+# Step 4 — Configure kubectl to talk to your new EKS cluster
 aws eks update-kubeconfig --name event-app-cluster --region ap-southeast-1
 
-# 3. Read Terraform outputs
+# Step 5 — Read the values Terraform created
 export ECR_REPO=$(terraform output -raw ecr_repo_url)
 export AWS_SECRET_NAME=$(terraform output -raw db_secret_name)
 export ESO_ROLE_ARN=$(terraform output -raw eso_role_arn)
 
-# 4. Run Ansible
+# Step 6 — Run Ansible to deploy the app
 cd ../ansible
 ansible-playbook -i inventory.ini deploy.yml \
   -e ecr_repo_url=$ECR_REPO \
@@ -325,39 +542,47 @@ ansible-playbook -i inventory.ini deploy.yml \
   -e aws_region=ap-southeast-1 \
   -e eso_role_arn=$ESO_ROLE_ARN
 
-# 5. Get the app URL
+# Step 7 — Get the app URL
+# Look for EXTERNAL-IP — open that in your browser
 kubectl get svc tomcat-service
-# Open the EXTERNAL-IP in a browser
 ```
 
 ---
 
-## Local Development
+## Local Development (No AWS Required)
 
-To run the app locally without AWS:
+To run the app on your local machine using Docker Compose:
 
 ```bash
+# Copy the example env file and set your own passwords
 cp .env.example .env
-# Edit .env and set passwords
+# Open .env in a text editor and change the placeholder passwords
 
+# Start MySQL and Tomcat locally
 docker compose up -d
+
+# Open in browser
 # App available at http://localhost:8081
 ```
 
 ---
 
-## Finding the DB Password
+## How to Find the DB Password
 
-The password is auto-generated by Terraform and stored in AWS Secrets Manager. You never need to set it, but if you need it for debugging:
+Passwords are auto-generated and stored in AWS Secrets Manager. You never need to set them, but if you need them for debugging:
 
 ```bash
-# View from AWS Secrets Manager (plaintext)
+# View all credentials in plain text
 aws secretsmanager get-secret-value \
   --secret-id event-app/db-credentials \
-  --query SecretString --output text | python3 -m json.tool
+  --query SecretString \
+  --output text | python3 -m json.tool
 
-# Log into MySQL directly from inside the pod
+# Or log into MySQL directly from inside the running pod
+# mysql-0 is the name of the MySQL pod (StatefulSet pods are named with index)
 kubectl exec -it mysql-0 -- bash
+
+# Inside the pod, the password is already set as an environment variable
 mysql -u root -p"$MYSQL_ROOT_PASSWORD"
 ```
 
@@ -365,7 +590,7 @@ mysql -u root -p"$MYSQL_ROOT_PASSWORD"
 
 ## Rotating DB Credentials
 
-ESO syncs every hour, so updating the secret in AWS Secrets Manager is all you need:
+Because ESO refreshes every hour, you only need to update the value in AWS Secrets Manager:
 
 ```bash
 aws secretsmanager put-secret-value \
@@ -373,14 +598,14 @@ aws secretsmanager put-secret-value \
   --secret-string '{
     "DB_URL":              "jdbc:mysql://mysql-service:3306/eventdb",
     "DB_USER":             "eventuser",
-    "DB_PASS":             "new-app-password",
-    "MYSQL_ROOT_PASSWORD": "new-root-password",
+    "DB_PASS":             "your-new-app-password",
+    "MYSQL_ROOT_PASSWORD": "your-new-root-password",
     "MYSQL_DATABASE":      "eventdb",
     "MYSQL_USER":          "eventuser",
-    "MYSQL_PASSWORD":      "new-app-password"
+    "MYSQL_PASSWORD":      "your-new-app-password"
   }'
 
-# Force immediate sync instead of waiting up to 1 hour
+# Force ESO to sync immediately instead of waiting up to 1 hour
 kubectl annotate externalsecret db-external-secret \
   force-sync=$(date +%s) --overwrite
 ```
@@ -389,58 +614,66 @@ kubectl annotate externalsecret db-external-secret \
 
 ## Teardown
 
-**Via Jenkins:** run the pipeline with **ACTION = Destroy**.
+**Always destroy after testing** to avoid AWS charges.
+
+**Via Jenkins:** Run the pipeline with **ACTION = Destroy**.
 
 **Manually:**
 ```bash
-kubectl delete svc tomcat-service        # release the ELB first
+# Delete the LoadBalancer service first — this releases the ELB in AWS
+kubectl delete svc tomcat-service
+
+# Destroy all infrastructure
 cd terraform && terraform destroy -auto-approve
 ```
 
-To also remove the state backend when completely done with the project:
+To also remove the bootstrap resources (only when completely done with the project):
 ```bash
 cd terraform/bootstrap && terraform destroy -auto-approve
 ```
 
 ---
 
-## Common Errors
+## Common Errors and Fixes
 
-| Error | Cause | Fix |
-|-------|-------|-----|
-| `permission denied on /var/run/docker.sock` | Jenkins user not in docker group | `sudo usermod -aG docker jenkins && sudo systemctl restart jenkins` |
-| `kubectl: the server asked for credentials` | EKS kubeconfig token expired (15 min TTL) | `aws eks update-kubeconfig --name event-app-cluster --region ap-southeast-1` |
-| Pods stuck in `Pending` | EBS CSI driver not running | `kubectl get pods -n kube-system \| grep ebs-csi` — ensure all pods are Running |
-| ESO secret not syncing | IRSA trust policy mismatch | Check ESO pod logs: `kubectl logs -n external-secrets deploy/external-secrets` |
-| ELB DNS not resolving | DNS propagation delay | Wait 2-3 minutes after the service is created |
+| Error | What it means | How to fix |
+|-------|--------------|------------|
+| `permission denied on /var/run/docker.sock` | Jenkins user is not in the docker group | `sudo usermod -aG docker jenkins && sudo systemctl restart jenkins` |
+| `the server has asked for the client to provide credentials` | Your kubectl token expired — EKS tokens only last 15 minutes | `aws eks update-kubeconfig --name event-app-cluster --region ap-southeast-1` |
+| Pods stuck in `Pending` | The EBS CSI driver is not running so PVCs can't be bound to disks | `kubectl get pods -n kube-system \| grep ebs-csi` — all pods should be Running |
+| ESO secret not syncing | IRSA trust policy mismatch — ESO can't assume the IAM role | Check ESO pod logs: `kubectl logs -n external-secrets deploy/external-secrets` |
+| ELB DNS not resolving | DNS propagation takes time after a new ELB is created | Wait 2-3 minutes and try again |
 
 ---
 
 ## Cost Estimate
 
-| Resource | Approx. cost |
-|----------|-------------|
-| EKS cluster control plane | ~$0.10/hr |
-| t3.medium SPOT node (x1) | ~$0.01-0.03/hr |
-| ELB | ~$0.025/hr |
+| Resource | Approx. cost per hour |
+|----------|----------------------|
+| EKS cluster control plane | ~$0.10 |
+| t3.medium SPOT node (x1) | ~$0.01-0.03 |
+| ELB | ~$0.025 |
 | ECR storage | negligible |
 | Secrets Manager | $0.40/secret/month |
 | S3 + DynamoDB (state) | negligible |
 
-**Always run the Destroy pipeline after testing** to avoid unexpected charges.
+**Total while running: ~$0.15/hr. Always destroy after testing.**
 
 ---
 
 ## Key Design Decisions
 
-**Why External Secrets Operator instead of fetching secrets in Ansible?**
-ESO runs inside the cluster and syncs automatically every hour. Ansible fetching secrets at deploy time means credentials are briefly in memory on the Jenkins agent. ESO keeps credentials entirely within the AWS/K8s boundary.
+**Why auto-generate passwords with Terraform instead of setting them manually?**
+If a human sets a password, they can forget it, leak it in a Slack message, or reuse it. Terraform's `random_password` generates a cryptographically random 24-character password that no human ever sees. The only place it exists is in AWS Secrets Manager — encrypted.
 
-**Why IRSA instead of a node IAM policy?**
-A node IAM policy grants every pod on that node access to Secrets Manager. IRSA uses OIDC federation to scope the permission to the ESO service account only — no other pod can read the DB credentials.
+**Why use ESO instead of fetching secrets in the pipeline?**
+If Ansible fetched the password from Secrets Manager and passed it to kubectl, the password would exist in memory on the Jenkins server for a moment. ESO fetches it inside the cluster — the password never leaves AWS/Kubernetes.
 
-**Why `random_password` in Terraform?**
-No human ever sets, sees, or rotates the password manually. Terraform owns the full lifecycle. The password is only ever stored in AWS Secrets Manager (encrypted) and in Terraform state (also encrypted in S3).
+**Why IRSA instead of giving the whole node group access to Secrets Manager?**
+With a node-level policy, every pod on the node can call Secrets Manager — including a compromised pod. IRSA uses cryptographic identity (OIDC tokens) so only the ESO pod's service account can assume the IAM role. Every other pod is denied.
 
-**Why SPOT instances for EKS nodes?**
-Cost reduction for a demo/learning project. For production, use ON_DEMAND or a mix.
+**Why StatefulSet for MySQL instead of Deployment?**
+Deployments are for stateless apps — pods can be killed and replaced freely. MySQL stores data on disk. StatefulSet gives each pod a stable name (`mysql-0`) and its own persistent volume that survives restarts. Using a Deployment for a database is a common beginner mistake that causes data loss.
+
+**Why S3 remote state instead of local state?**
+Terraform state is a file that records everything Terraform has created. If it's on your laptop and Jenkins runs `terraform apply`, Jenkins has no idea what already exists and may try to create duplicates or fail entirely. S3 remote state means everyone works from the same record. DynamoDB locking prevents two runs from conflicting.
