@@ -797,6 +797,16 @@ To also remove the bootstrap resources (only when completely done with the proje
 cd terraform/bootstrap && terraform destroy -auto-approve
 ```
 
+> **Important — Stop or Terminate the Jenkins EC2 Instance**
+>
+> `terraform destroy` tears down the EKS cluster, ECR, VPC, and Secrets Manager — but the Jenkins EC2 instance was created manually, so Terraform does not touch it.
+>
+> After destroying the infrastructure, go to the **AWS Console → EC2 → Instances**, find your Jenkins server, and either:
+> - **Stop** it — if you plan to use the project again soon (you won't be charged for compute, but the EBS disk still costs ~$0.10/GB/month)
+> - **Terminate** it — if you are completely done (deletes the disk too, zero ongoing cost)
+>
+> Leaving the Jenkins EC2 instance running while the rest of the infra is destroyed wastes money with nothing to show for it.
+
 ---
 
 ## Common Errors and Fixes
