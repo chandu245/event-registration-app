@@ -60,7 +60,12 @@ pipeline {
             script: 'cd terraform && terraform output -raw db_secret_name',
             returnStdout: true
           ).trim()
+          env.ESO_ROLE_ARN = sh(
+            script: 'cd terraform && terraform output -raw eso_role_arn',
+            returnStdout: true
+          ).trim()
           echo "DB secret name: ${env.AWS_SECRET_NAME}"
+          echo "ESO role ARN:   ${env.ESO_ROLE_ARN}"
         }
       }
     }
@@ -71,12 +76,18 @@ pipeline {
         sh '''
           set -e
           echo "Using ansible-playbook at: $(which ansible-playbook)"
+          # Ensure helm is installed (required for ESO install task in Ansible)
+          if ! command -v helm &>/dev/null; then
+            echo "Installing helm..."
+            curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          fi
           cd ansible
           ansible-playbook -i inventory.ini deploy.yml \
             -e ecr_repo_url=$ECR_REPO \
             -e build_number=$BUILD_NUMBER \
             -e aws_secret_name=$AWS_SECRET_NAME \
-            -e aws_region=$AWS_REGION
+            -e aws_region=$AWS_REGION \
+            -e eso_role_arn=$ESO_ROLE_ARN
         '''
       }
     }

@@ -37,34 +37,6 @@ module "eks" {
   enable_cluster_creator_admin_permissions = true
 }
 
-# ---------------------------------------------------------------------------
-# External Secrets Operator — installed via Helm into the cluster.
-#
-# ESO watches ExternalSecret resources and syncs secrets from AWS Secrets
-# Manager into Kubernetes Secrets automatically. This replaces the old
-# pattern of Ansible fetching SM values and applying K8s secrets manually.
-#
-# The ESO service account is annotated with the IRSA role ARN so that only
-# the ESO pod can call secretsmanager:GetSecretValue — not every pod on
-# every node (which was the old node-level IAM policy approach).
-# ---------------------------------------------------------------------------
-
-resource "helm_release" "external_secrets" {
-  name             = "external-secrets"
-  repository       = "https://charts.external-secrets.io"
-  chart            = "external-secrets"
-  version          = "0.9.20"
-  namespace        = "external-secrets"
-  create_namespace = true
-  wait             = true
-  timeout          = 300
-
-  # Annotate the ESO service account with the IRSA role so AWS SDK inside
-  # the ESO pod picks up scoped credentials via the pod identity webhook.
-  set {
-    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
-    value = aws_iam_role.eso.arn
-  }
-
-  depends_on = [module.eks]
-}
+# External Secrets Operator is installed by Ansible (deploy.yml) after
+# the cluster is ready — this avoids the Helm provider chicken-and-egg
+# problem where Terraform tries to connect to a cluster that doesn't exist yet.

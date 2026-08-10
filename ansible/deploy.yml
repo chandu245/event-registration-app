@@ -1,9 +1,9 @@
 - hosts: local
   gather_facts: false
   vars:
-    ecr_repo:   "{{ ecr_repo_url }}"
-    image_tag:  "{{ build_number }}"
-    aws_region: "{{ aws_region | default('ap-southeast-1') }}"
+    ecr_repo:    "{{ ecr_repo_url }}"
+    image_tag:   "{{ build_number }}"
+    aws_region:  "{{ aws_region | default('ap-southeast-1') }}"
     secret_name: "{{ aws_secret_name }}"
 
   pre_tasks:
@@ -12,8 +12,9 @@
         that:
           - ecr_repo_url is defined and ecr_repo_url | length > 0
           - aws_secret_name is defined and aws_secret_name | length > 0
+          - eso_role_arn is defined and eso_role_arn | length > 0
         fail_msg: >
-          ecr_repo_url and aws_secret_name are required.
+          ecr_repo_url, aws_secret_name, and eso_role_arn are required.
           They are read from Terraform outputs by the Jenkinsfile automatically.
 
   tasks:
@@ -33,11 +34,29 @@
       command: docker push {{ ecr_repo }}:{{ image_tag }}
 
     # ── External Secrets Operator ─────────────────────────────────────────
-    # ESO was installed by Terraform (helm_release). We just need to create
-    # the ClusterSecretStore (points ESO at AWS SM) and the ExternalSecret
-    # (tells ESO which secret to sync and what K8s Secret to create).
+    # ESO is installed via Helm, then we create:
+    #   ClusterSecretStore — points ESO at AWS Secrets Manager (using IRSA)
+    #   ExternalSecret     — tells ESO which secret to sync into K8s
     # ESO then creates and manages "db-secret" automatically — no credentials
     # are fetched or handled by Ansible.
+
+    - name: Add External Secrets Operator Helm repo
+      command: helm repo add external-secrets https://charts.external-secrets.io
+      changed_when: false
+
+    - name: Update Helm repos
+      command: helm repo update
+      changed_when: false
+
+    - name: Install External Secrets Operator
+      command: >
+        helm upgrade --install external-secrets external-secrets/external-secrets
+        --namespace external-secrets
+        --create-namespace
+        --version 0.9.20
+        --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"={{ eso_role_arn }}
+        --wait
+        --timeout 300s
 
     - name: Apply ClusterSecretStore (ESO → AWS Secrets Manager bridge)
       kubernetes.core.k8s:
