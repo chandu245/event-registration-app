@@ -612,6 +612,165 @@ kubectl annotate externalsecret db-external-secret \
 
 ---
 
+## Hands-On Testing
+
+Once the app is deployed, use these exercises to verify everything works and understand key Kubernetes concepts.
+
+---
+
+### Exercise 1 — Register a user and check MySQL
+
+**Step 1 — Open the app and register someone**
+
+Get the app URL:
+```bash
+kubectl get svc tomcat-service
+# Copy the value under EXTERNAL-IP and open http://<EXTERNAL-IP> in your browser
+```
+
+Fill in the form and submit. You should land on the success page.
+
+**Step 2 — Log into MySQL and verify the row was saved**
+
+```bash
+# Get a shell inside the MySQL pod
+# mysql-0 is the pod name — StatefulSet pods are always named <name>-0, <name>-1, etc.
+kubectl exec -it mysql-0 -- bash
+```
+
+Now you are inside the MySQL container. Run:
+
+```bash
+# Log into MySQL using the root password that is already set as an env var in the pod
+mysql -u root -p"$MYSQL_ROOT_PASSWORD"
+```
+
+Inside MySQL:
+
+```sql
+-- Switch to the eventdb database
+USE eventdb;
+
+-- Show all tables
+SHOW TABLES;
+
+-- View all registered users
+SELECT * FROM registrations;
+
+-- Exit MySQL
+EXIT;
+```
+
+You should see the row you just submitted through the form. Type `exit` to leave the pod shell.
+
+---
+
+### Exercise 2 — Test PVC (Persistent Volume) — Does data survive a pod restart?
+
+This is one of the most important Kubernetes concepts to understand. A regular container loses all its data when it restarts. A PersistentVolumeClaim (PVC) attaches an EBS volume to the pod so data survives restarts.
+
+**What we are testing:** Kill the MySQL pod and verify your registration data is still there after it comes back.
+
+**Step 1 — Check what data exists before killing the pod**
+
+```bash
+kubectl exec -it mysql-0 -- bash
+mysql -u root -p"$MYSQL_ROOT_PASSWORD"
+```
+```sql
+USE eventdb;
+SELECT * FROM registrations;
+-- Remember how many rows you see
+EXIT;
+```
+
+**Step 2 — Kill the MySQL pod**
+
+```bash
+# This deletes the pod — Kubernetes will immediately create a new one
+# because the StatefulSet says "always keep 1 replica running"
+kubectl delete pod mysql-0
+```
+
+**Step 3 — Watch Kubernetes bring it back**
+
+```bash
+# Run this repeatedly to watch the pod restart
+# You will see it go from Terminating → Pending → Running
+kubectl get pods -w
+# Press Ctrl+C once you see mysql-0 Running and Ready (1/1)
+```
+
+**Step 4 — Verify the data is still there**
+
+```bash
+kubectl exec -it mysql-0 -- bash
+mysql -u root -p"$MYSQL_ROOT_PASSWORD"
+```
+```sql
+USE eventdb;
+SELECT * FROM registrations;
+-- All your rows should still be here
+EXIT;
+```
+
+**Why does the data survive?**
+
+```
+mysql-0 pod is killed
+        │
+        ▼
+Kubernetes creates a new mysql-0 pod
+        │
+        ▼
+K8s re-attaches the same EBS volume to the new pod
+(the PVC "mysql-data-mysql-0" is bound to a specific EBS volume ID)
+        │
+        ▼
+MySQL starts up and reads data from the EBS volume
+        │
+        ▼
+All data is intact — exactly as it was before the pod was killed
+```
+
+The EBS volume is the key. It exists independently of the pod. The pod is temporary — the volume is permanent (until you delete the PVC).
+
+**Step 5 — Verify the PVC and its EBS volume**
+
+```bash
+# See the PVC — notice it shows BOUND status and the storage size
+kubectl get pvc
+
+# See detailed info about the PVC including the EBS volume ID
+kubectl describe pvc mysql-data-mysql-0
+
+# You can also verify the EBS volume in AWS Console:
+# EC2 → Elastic Block Store → Volumes → look for a 2Gi gp3 volume tagged with your cluster name
+```
+
+---
+
+### Exercise 3 — Verify ESO is syncing secrets correctly
+
+```bash
+# Check the ExternalSecret status — should show READY=True and STATUS=SecretSynced
+kubectl get externalsecret
+
+# See detailed sync status including last sync time
+kubectl describe externalsecret db-external-secret
+
+# Verify the K8s Secret exists and has the correct keys
+kubectl get secret db-secret
+kubectl describe secret db-secret
+# Note: values are base64 encoded — K8s always encodes secret values
+
+# Decode a value to verify it matches what is in AWS Secrets Manager
+kubectl get secret db-secret -o jsonpath='{.data.DB_USER}' | base64 -d
+# Should print: eventuser
+```
+
+---
+
 ## Teardown
 
 **Always destroy after testing** to avoid AWS charges.
@@ -645,11 +804,63 @@ cd terraform/bootstrap && terraform destroy -auto-approve
 | Error | What it means | How to fix |
 |-------|--------------|------------|
 | `permission denied on /var/run/docker.sock` | Jenkins user is not in the docker group | `sudo usermod -aG docker jenkins && sudo systemctl restart jenkins` |
-| `the server has asked for the client to provide credentials` | Your kubectl token expired — EKS tokens only last 15 minutes | `aws eks update-kubeconfig --name event-app-cluster --region ap-southeast-1` |
+| `the server has asked for the client to provide credentials` (on Jenkins) | EKS kubeconfig token expired — tokens last 15 minutes | `aws eks update-kubeconfig --name event-app-cluster --region ap-southeast-1` |
+| `the server has asked for the client to provide credentials` (on local machine) | Your local IAM user is not granted access to the EKS cluster — the cluster was created by the Jenkins EC2 role so only that role has access by default | Run the access entry commands below |
 | Pods stuck in `Pending` | The EBS CSI driver is not running so PVCs can't be bound to disks | `kubectl get pods -n kube-system \| grep ebs-csi` — all pods should be Running |
 | ESO secret not syncing | IRSA trust policy mismatch — ESO can't assume the IAM role | Check ESO pod logs: `kubectl logs -n external-secrets deploy/external-secrets` |
 | ELB DNS not resolving | DNS propagation takes time after a new ELB is created | Wait 2-3 minutes and try again |
 | EBS volumes still exist after destroy | PVCs are created by Kubernetes not Terraform so `terraform destroy` doesn't remove them | Delete PVCs before destroying: `kubectl delete pvc --all --all-namespaces` |
+
+---
+
+### Granting Your Local Machine Access to EKS
+
+By default, only the IAM identity that **created** the EKS cluster (the Jenkins EC2 role) can run kubectl commands against it. If you try to run kubectl from your local machine or WSL and get the credentials error, it means your local IAM user has not been granted access yet.
+
+**Why this happens:**
+```
+EKS cluster is created by Jenkins EC2 role
+        │
+        ▼
+EKS automatically grants admin access to that role only
+        │
+        ▼
+Your local IAM user (e.g. chandu-admin) is a different identity
+        └─► kubectl fails with "server asked for credentials"
+```
+
+**Fix — grant your local IAM user access to the cluster:**
+
+```bash
+# Step 1 — Get your local IAM user ARN
+aws sts get-caller-identity
+# Note the "Arn" value — e.g. arn:aws:iam::565968180632:user/chandu-admin
+
+# Step 2 — Create an access entry for your IAM user
+# Replace the ARN with your own from Step 1
+aws eks create-access-entry \
+  --cluster-name event-app-cluster \
+  --principal-arn arn:aws:iam::YOUR_ACCOUNT_ID:user/YOUR_IAM_USERNAME \
+  --region ap-southeast-1
+
+# Step 3 — Grant cluster admin permissions to that entry
+aws eks associate-access-policy \
+  --cluster-name event-app-cluster \
+  --principal-arn arn:aws:iam::YOUR_ACCOUNT_ID:user/YOUR_IAM_USERNAME \
+  --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \
+  --access-scope type=cluster \
+  --region ap-southeast-1
+
+# Step 4 — Refresh your kubeconfig
+aws eks update-kubeconfig --name event-app-cluster --region ap-southeast-1
+
+# Step 5 — Verify it works
+kubectl get nodes
+```
+
+This is a one-time step per IAM user. Once added, your local machine has full kubectl access to the cluster.
+
+> **Note:** This is only needed for running kubectl locally (e.g. from your laptop or WSL). The Jenkins pipeline never needs this because it runs on the EC2 instance that created the cluster — that role already has access.
 
 ---
 
