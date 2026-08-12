@@ -101,7 +101,7 @@ Step 5: MySQL pod reads password from db-secret on startup
 
 | Layer | Technology | Why we use it |
 |-------|-----------|---------------|
-| Application | Java 17, Tomcat 10 | The web app that users interact with |
+| Application | Java 21, Tomcat 10 | The web app that users interact with |
 | Database | MySQL 8 | Stores event registrations |
 | Containerisation | Docker | Packages the app so it runs the same everywhere |
 | Container Registry | AWS ECR | Stores our Docker images privately in AWS |
@@ -290,7 +290,7 @@ Once inside, run these commands one section at a time:
 # ── Install Java ──────────────────────────────────────────────────────────
 # Jenkins requires Java to run.
 # Amazon Corretto is Amazon's supported OpenJDK distribution.
-sudo dnf install -y java-17-amazon-corretto
+sudo dnf install -y java-21-amazon-corretto-devel
 
 # Verify Java is installed
 java -version
