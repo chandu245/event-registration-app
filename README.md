@@ -30,6 +30,7 @@ This project demonstrates all of that.
 | **Terraform** | Write code that creates AWS infrastructure (servers, networks, databases) |
 | **Ansible** | Automate tasks on servers — install software, run commands, deploy apps |
 | **Jenkins** | A server that watches your GitHub repo and runs your deployment automatically |
+| **Trivy** | A security scanner that checks your Docker image for known vulnerabilities and your IaC configs for misconfigurations before every deployment |
 | **AWS Secrets Manager** | A secure vault in AWS where passwords are stored encrypted |
 | **External Secrets Operator** | A Kubernetes component that automatically pulls secrets from AWS and makes them available to your pods |
 | **IRSA** | A way to give a specific Kubernetes pod permission to access AWS — without using passwords |
@@ -49,6 +50,9 @@ Developer pushes code to GitHub
         ▼
   Jenkins Pipeline (runs on an EC2 server)
         │
+        ├─► Trivy (config scan)
+        │       └─► Scans Terraform files, K8s manifests, Dockerfile for misconfigurations
+        │
         ├─► Terraform
         │       │  Creates all AWS infrastructure:
         │       │  VPC (private network), EKS cluster (Kubernetes),
@@ -58,9 +62,12 @@ Developer pushes code to GitHub
         ├─► kubectl (Kubernetes CLI)
         │       └─► Connects Jenkins to the EKS cluster
         │
+        ├─► Docker + Trivy (image build & scan)
+        │       ├─► Builds Docker image from your Java code
+        │       ├─► Trivy scans the image for CVEs — fails if CRITICAL found
+        │       └─► Pushes image to ECR only after scan passes
+        │
         └─► Ansible
-              ├─► Builds Docker image from your Java code
-              ├─► Pushes image to ECR
               ├─► Installs External Secrets Operator into the cluster
               ├─► Tells ESO: "sync passwords from AWS Secrets Manager into K8s"
               ├─► Deploys MySQL database (reads passwords from K8s Secret)
@@ -100,8 +107,9 @@ Step 5: MySQL pod reads password from db-secret on startup
 | Container Registry | AWS ECR | Stores our Docker images privately in AWS |
 | Orchestration | AWS EKS (Kubernetes) | Runs and manages our containers in the cloud |
 | Infrastructure as Code | Terraform | Creates all AWS resources with code |
-| Configuration Management | Ansible | Automates the deployment steps |
+| Configuration Management | Ansible | Automates the Kubernetes deployment steps |
 | CI/CD | Jenkins | Automates the pipeline end to end |
+| Security Scanning | Trivy | Scans Docker images for CVEs and IaC configs for misconfigurations |
 | Secrets Management | AWS Secrets Manager + ESO | Stores and syncs passwords securely |
 | IAM Scoping | IRSA | Gives only the ESO pod access to Secrets Manager |
 | Storage | AWS EBS gp3 | Persistent disk for MySQL data |
@@ -156,6 +164,7 @@ event-registration-app/
 ├── Jenkinsfile                       # The pipeline — all stages defined as code
 ├── docker-compose.yml                # Run the app locally without AWS
 ├── .env.example                      # Template for local passwords
+├── .trivyignore                      # CVE IDs to suppress in Trivy scans (accepted false positives)
 └── .gitignore                        # Files Git should never track (secrets, build output)
 ```
 
