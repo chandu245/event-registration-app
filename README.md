@@ -808,13 +808,20 @@ kubectl get secret db-secret -o jsonpath='{.data.DB_USER}' | base64 -d
 # Step 1 — Delete the LoadBalancer service — releases the ELB in AWS
 kubectl delete svc tomcat-service
 
-# Step 2 — Delete all PVCs — this releases and deletes the EBS volumes in AWS
-# EBS volumes are created by Kubernetes, not Terraform, so terraform destroy
-# will not remove them. You must delete them manually or they keep charging you.
-kubectl delete pvc --all --all-namespaces
-kubectl wait --for=delete pvc --all --all-namespaces --timeout=120s
+# Step 2 — Delete the StatefulSet first so the MySQL pod stops and
+# unmounts the EBS volume before we try to delete the PVC.
+# Skipping this causes the PVC deletion to hang for several minutes
+# because Kubernetes waits for the volume to detach from the running pod.
+kubectl delete statefulset mysql
 
-# Step 3 — Destroy all infrastructure
+# Step 3 — Wait for the MySQL pod to fully terminate (volume detaches)
+kubectl wait --for=delete pod/mysql-0 --timeout=60s || true
+
+# Step 4 — Delete all PVCs — volume is already detached so this is instant
+kubectl delete pvc --all --all-namespaces
+kubectl wait --for=delete pvc --all --all-namespaces --timeout=60s || true
+
+# Step 5 — Destroy all infrastructure
 cd terraform && terraform destroy -auto-approve
 ```
 
