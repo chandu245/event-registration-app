@@ -243,7 +243,7 @@ aws sts get-caller-identity
 Jenkins is the CI/CD server that runs your pipeline. It must run on an **EC2 instance** (not your local machine) because it needs an IAM instance role to talk to AWS without storing credentials.
 
 **Step A — Launch an EC2 instance:**
-- AMI: Ubuntu 22.04
+- AMI: Amazon Linux 2023
 - Instance type: t3.medium
 - Create a new key pair (save the .pem file — you'll need it to SSH in)
 - Security group: allow inbound on port 22 (SSH) and port 8080 (Jenkins UI)
@@ -272,16 +272,16 @@ Jenkins talks to AWS (EKS, ECR, Secrets Manager, etc.) using this role — no ac
 # SSH into your EC2 instance
 # Replace <YOUR-EC2-IP> with the public IP of your instance
 # Replace <YOUR-KEY.pem> with the path to your key file
-ssh -i <YOUR-KEY.pem> ubuntu@<YOUR-EC2-IP>
+ssh -i <YOUR-KEY.pem> ec2-user@<YOUR-EC2-IP>
 ```
 
 Once inside, run these commands one section at a time:
 
 ```bash
 # ── Install Java ──────────────────────────────────────────────────────────
-# Jenkins requires Java to run
-sudo apt-get update
-sudo apt-get install -y fontconfig openjdk-17-jre
+# Jenkins requires Java to run.
+# Amazon Corretto is Amazon's supported OpenJDK distribution.
+sudo dnf install -y java-17-amazon-corretto
 
 # Verify Java is installed
 java -version
@@ -289,18 +289,15 @@ java -version
 
 ```bash
 # ── Install Jenkins ───────────────────────────────────────────────────────
-# Add the Jenkins package repository to apt
-sudo wget -O /usr/share/keyrings/jenkins-keyring.asc \
-  https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key
-echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc]" \
-  https://pkg.jenkins.io/debian-stable binary/ | sudo tee \
-  /etc/apt/sources.list.d/jenkins.list > /dev/null
+# Add the Jenkins repository for Amazon Linux / Red Hat
+sudo wget -O /etc/yum.repos.d/jenkins.repo \
+  https://pkg.jenkins.io/redhat-stable/jenkins.repo
+sudo rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
 
 # Install Jenkins
-sudo apt-get update
-sudo apt-get install -y jenkins
+sudo dnf install -y jenkins
 
-# Start Jenkins and enable it to start on boot
+# Start Jenkins and enable it to start automatically on boot
 sudo systemctl enable jenkins
 sudo systemctl start jenkins
 
@@ -312,21 +309,16 @@ Open your browser and go to `http://<YOUR-EC2-IP>:8080`. Enter the password from
 
 ```bash
 # ── Install Docker ────────────────────────────────────────────────────────
-# Docker is used to build and push the container image
-sudo apt-get install -y ca-certificates curl
-sudo install -m 0755 -d /etc/apt/keyrings
-sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-  -o /etc/apt/keyrings/docker.asc
-echo "deb [arch=$(dpkg --print-architecture) \
-  signed-by=/etc/apt/keyrings/docker.asc] \
-  https://download.docker.com/linux/ubuntu \
-  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
-  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-sudo apt-get update
-sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+# Docker is used to build and push the container image.
+# Amazon Linux 2023 includes Docker in its default package repo.
+sudo dnf install -y docker
 
-# Allow Jenkins to run Docker without sudo
-# Without this, Jenkins will get "permission denied" when it tries to build images
+# Start Docker and enable it to start on boot
+sudo systemctl enable docker
+sudo systemctl start docker
+
+# Allow Jenkins to run Docker without sudo.
+# Without this, Jenkins will get "permission denied" when it tries to build images.
 sudo usermod -aG docker jenkins
 sudo systemctl restart jenkins
 
@@ -336,12 +328,12 @@ docker --version
 
 ```bash
 # ── Install Ansible ───────────────────────────────────────────────────────
-# Ansible runs the deployment tasks (build image, deploy to K8s, etc.)
-sudo apt-get install -y python3-pip
+# Ansible runs the Kubernetes deployment tasks after the image is built.
+sudo dnf install -y python3-pip
 pip3 install --user ansible kubernetes
 
-# Install the Kubernetes collection for Ansible
-# This gives Ansible the ability to apply K8s manifests
+# Install the Kubernetes collection for Ansible.
+# This gives Ansible the ability to apply K8s manifests directly.
 ansible-galaxy collection install kubernetes.core
 
 # Verify Ansible works
@@ -350,7 +342,7 @@ ansible --version
 
 ```bash
 # ── Install kubectl ───────────────────────────────────────────────────────
-# kubectl is the command-line tool for interacting with Kubernetes
+# kubectl is the command-line tool for talking to your Kubernetes cluster.
 curl -LO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
 sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
 
@@ -360,8 +352,8 @@ kubectl version --client
 
 ```bash
 # ── Install Helm ──────────────────────────────────────────────────────────
-# Helm is a package manager for Kubernetes
-# We use it to install External Secrets Operator into the cluster
+# Helm is a package manager for Kubernetes.
+# We use it to install External Secrets Operator into the cluster.
 curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
 # Verify Helm works
@@ -370,15 +362,20 @@ helm version --short
 
 ```bash
 # ── Install Trivy ─────────────────────────────────────────────────────────
-# Trivy is a security scanner — it scans Docker images for known CVEs and
-# Terraform/Kubernetes configs for misconfigurations before every deployment.
-# The pipeline fails if any CRITICAL vulnerability is found in the image.
-sudo apt-get install -y wget apt-transport-https gnupg
-wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | \
-  sudo apt-key add -
-echo "deb https://aquasecurity.github.io/trivy-repo/deb generic main" | \
-  sudo tee /etc/apt/sources.list.d/trivy.list
-sudo apt-get update && sudo apt-get install -y trivy
+# Trivy is a security scanner used in the pipeline to:
+#   1. Scan Terraform and Kubernetes configs for misconfigurations
+#   2. Scan the Docker image for known CVEs before pushing to ECR
+# The pipeline fails automatically if a CRITICAL vulnerability is found.
+sudo rpm --import https://aquasecurity.github.io/trivy-repo/rpm/public.key
+cat << 'EOF' | sudo tee /etc/yum.repos.d/trivy.repo
+[trivy]
+name=Trivy repository
+baseurl=https://aquasecurity.github.io/trivy-repo/rpm/releases/$basearch/
+gpgcheck=1
+enabled=1
+gpgkey=https://aquasecurity.github.io/trivy-repo/rpm/public.key
+EOF
+sudo dnf install -y trivy
 
 # Verify Trivy works
 trivy --version
@@ -386,14 +383,11 @@ trivy --version
 
 ```bash
 # ── Install Terraform ─────────────────────────────────────────────────────
-# Terraform creates all the AWS infrastructure
-sudo apt-get install -y gnupg software-properties-common
-wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor | \
-  sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg > /dev/null
-echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] \
-  https://apt.releases.hashicorp.com $(lsb_release -cs) main" | \
-  sudo tee /etc/apt/sources.list.d/hashicorp.list
-sudo apt-get update && sudo apt-get install -y terraform
+# Terraform creates all the AWS infrastructure (VPC, EKS, ECR, IAM, etc.)
+sudo dnf install -y dnf-plugins-core
+sudo dnf config-manager --add-repo \
+  https://rpm.releases.hashicorp.com/AmazonLinux/hashicorp.repo
+sudo dnf install -y terraform
 
 # Verify Terraform works
 terraform version
