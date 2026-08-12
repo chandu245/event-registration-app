@@ -339,11 +339,16 @@ docker --version
 # ── Install Ansible ───────────────────────────────────────────────────────
 # Ansible runs the Kubernetes deployment tasks after the image is built.
 sudo dnf install -y python3-pip
-pip3 install --user ansible kubernetes
 
-# Install the Kubernetes collection for Ansible.
-# This gives Ansible the ability to apply K8s manifests directly.
-ansible-galaxy collection install kubernetes.core
+# Install system-wide (sudo) so that the jenkins user can find ansible-playbook.
+# Without sudo, pip installs to ~/.local/bin which only the current user can see.
+# Jenkins runs as its own user so it would get "ansible-playbook: command not found".
+sudo pip3 install ansible kubernetes
+
+# Install the Kubernetes collection for Ansible system-wide.
+# -p sets the install path to a shared location all users can read.
+sudo ansible-galaxy collection install kubernetes.core \
+  -p /usr/share/ansible/collections
 
 # Verify Ansible works
 ansible --version
