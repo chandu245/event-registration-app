@@ -31,6 +31,26 @@ pipeline {
 
     // ── DEPLOY ─────────────────────────────────────────────────────────────
 
+    stage('Security Scan - Configs') {
+      when { expression { params.ACTION == 'Deploy' } }
+      steps {
+        // Trivy config scan — checks Terraform files and Kubernetes manifests
+        // for misconfigurations (open ports, missing resource limits, etc.).
+        // exit-code 0 means the stage reports findings but does NOT fail the
+        // build — use this to review and fix issues incrementally.
+        sh '''
+          echo "=== Scanning Terraform configs ==="
+          trivy config --exit-code 0 --severity HIGH,CRITICAL terraform/
+
+          echo "=== Scanning Kubernetes manifests ==="
+          trivy config --exit-code 0 --severity HIGH,CRITICAL ansible/templates/
+
+          echo "=== Scanning Dockerfile ==="
+          trivy config --exit-code 0 --severity HIGH,CRITICAL app/Dockerfile
+        '''
+      }
+    }
+
     stage('Provision Infra') {
       when { expression { params.ACTION == 'Deploy' } }
       steps {
@@ -85,9 +105,39 @@ pipeline {
       }
     }
 
+    stage('Build & Scan Image') {
+      when { expression { params.ACTION == 'Deploy' } }
+      steps {
+        sh '''
+          set -e
+
+          # Log in to ECR so docker can push to it
+          aws ecr get-login-password --region $AWS_REGION \
+            | docker login --username AWS --password-stdin $ECR_REPO
+
+          # Build the Docker image
+          docker build -t $ECR_REPO:$BUILD_NUMBER ./app
+
+          echo "=== Trivy image scan — HIGH findings (informational) ==="
+          trivy image --exit-code 0 --severity HIGH $ECR_REPO:$BUILD_NUMBER
+
+          echo "=== Trivy image scan — CRITICAL findings (build gate) ==="
+          # exit-code 1 fails the pipeline if any CRITICAL CVE is found.
+          # Fix: update the base image in app/Dockerfile or suppress a known
+          # false-positive with a .trivyignore file at the repo root.
+          trivy image --exit-code 1 --severity CRITICAL $ECR_REPO:$BUILD_NUMBER
+
+          # Push only after the scan passes
+          docker push $ECR_REPO:$BUILD_NUMBER
+        '''
+      }
+    }
+
     stage('Deploy via Ansible') {
       when { expression { params.ACTION == 'Deploy' } }
       steps {
+        // Image is already built and pushed by the previous stage.
+        // Ansible handles ESO installation and Kubernetes deployment only.
         sh '''
           set -e
           cd ansible

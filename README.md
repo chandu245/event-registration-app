@@ -369,6 +369,22 @@ helm version --short
 ```
 
 ```bash
+# ── Install Trivy ─────────────────────────────────────────────────────────
+# Trivy is a security scanner — it scans Docker images for known CVEs and
+# Terraform/Kubernetes configs for misconfigurations before every deployment.
+# The pipeline fails if any CRITICAL vulnerability is found in the image.
+sudo apt-get install -y wget apt-transport-https gnupg
+wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | \
+  sudo apt-key add -
+echo "deb https://aquasecurity.github.io/trivy-repo/deb generic main" | \
+  sudo tee /etc/apt/sources.list.d/trivy.list
+sudo apt-get update && sudo apt-get install -y trivy
+
+# Verify Trivy works
+trivy --version
+```
+
+```bash
 # ── Install Terraform ─────────────────────────────────────────────────────
 # Terraform creates all the AWS infrastructure
 sudo apt-get install -y gnupg software-properties-common
@@ -386,7 +402,7 @@ terraform version
 ```bash
 # ── Final verification — all tools should print their versions ────────────
 java -version && docker --version && ansible --version && \
-kubectl version --client && helm version --short && terraform version
+kubectl version --client && helm version --short && terraform version && trivy --version
 ```
 
 #### 3. Jenkins Credentials
@@ -493,10 +509,12 @@ Watch the pipeline run through each stage. The first run takes about 20-30 minut
 | Stage | What it does | Why |
 |-------|-------------|-----|
 | **Checkout** | Downloads your code from GitHub | Jenkins needs the latest code to build and deploy |
+| **Security Scan - Configs** | Trivy scans Terraform files, Kubernetes manifests, and Dockerfile for misconfigurations | Catches security issues in your infrastructure code before anything is provisioned — findings are reported but don't block the build |
 | **Provision Infra** | Runs `terraform apply` — creates VPC, EKS, ECR, Secrets Manager, IAM roles | Creates all the AWS infrastructure the app needs to run |
 | **Update kubeconfig** | Runs `aws eks update-kubeconfig` | Gives Jenkins's kubectl the credentials to talk to your EKS cluster |
-| **Fetch Terraform outputs** | Reads ECR URL, secret name, ESO role ARN from Terraform | These values are needed by Ansible in the next stage |
-| **Deploy via Ansible** | Installs ESO, applies all K8s manifests, builds and pushes Docker image | Actually deploys the app to the cluster |
+| **Fetch Terraform outputs** | Reads ECR URL, secret name, ESO role ARN from Terraform | These values are needed by the next stages |
+| **Build & Scan Image** | Builds the Docker image, runs Trivy CVE scan, then pushes to ECR | Fails the build if any CRITICAL vulnerability is found — the image is only pushed if it passes the scan |
+| **Deploy via Ansible** | Installs ESO and applies all Kubernetes manifests | Deploys the pre-scanned image to EKS — no docker build here, image was already built and verified |
 | **Wait & Verify** | Polls until the ELB returns HTTP 200 | Confirms the app is live before declaring success |
 
 ### Destroy

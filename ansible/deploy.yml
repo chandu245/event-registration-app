@@ -19,19 +19,10 @@
 
   tasks:
     # ── Docker image ──────────────────────────────────────────────────────
-
-    - name: Log in to ECR
-      shell: >
-        aws ecr get-login-password --region {{ aws_region }} |
-        docker login --username AWS --password-stdin {{ ecr_repo }}
-
-    - name: Build Docker image
-      # playbook_dir resolves to an absolute path — avoids CWD ambiguity
-      # with the Ansible `command` module.
-      command: docker build -t {{ ecr_repo }}:{{ image_tag }} {{ playbook_dir }}/../app
-
-    - name: Push image to ECR
-      command: docker push {{ ecr_repo }}:{{ image_tag }}
+    # Build, Trivy scan, and ECR push are handled by the Jenkins
+    # "Build & Scan Image" stage before this playbook runs.
+    # Ansible receives ecr_repo_url and build_number so it can reference
+    # the correct image tag in the Kubernetes Deployment manifest.
 
     # ── External Secrets Operator ─────────────────────────────────────────
     # ESO is installed via Helm, then we create:
